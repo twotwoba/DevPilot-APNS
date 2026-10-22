@@ -1,0 +1,19 @@
+# 构建产物与本地状态
+/bin/
+/dist/
+*.test
+*.out
+
+# 部署密钥绝不入库
+deploy/secrets/*.p8
+deploy/secrets/*.pem
+deploy/.env
+deploy/secrets/*.apns
+
+# 本地数据卷
+/data/
+
+# 编辑器
+.DS_Store
+.idea/
+.vscode/

@@ -1,0 +1,65 @@
+# DevPilot relay 的 EC2 单机部署。
+#
+#   cp .env.example .env
+#   mkdir -p secrets && cp ~/AuthKey_XXXX.p8 secrets/apns.p8 && chmod 600 secrets/apns.p8
+#   docker compose up -d --build
+#
+# Caddy 负责 TLS 与 WSS 反代；relay 只监听容器内网 8080，不暴露到公网。
+
+services:
+  relay:
+    build:
+      context: ..
+      dockerfile: deploy/Dockerfile
+    image: devpilot-relay:latest
+    container_name: devpilot-relay
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      LISTEN_ADDR: :8080
+      DATA_DIR: /data
+    volumes:
+      - relay-data:/data
+      - ./secrets/apns.p8:/run/secrets/apns.p8:ro
+    expose:
+      - "8080"
+    read_only: true
+    tmpfs:
+      - /tmp
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+  caddy:
+    image: caddy:2.8-alpine
+    container_name: devpilot-caddy
+    restart: unless-stopped
+    depends_on:
+      - relay
+    environment:
+      DOMAIN: ${DOMAIN}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy-data:/data
+      - caddy-config:/config
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "5"
+
+volumes:
+  relay-data:
+  caddy-data:
+  caddy-config:

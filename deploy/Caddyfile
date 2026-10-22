@@ -1,0 +1,18 @@
+# 由 docker compose 注入；DOMAIN 必须与 DNS A 记录一致。
+{$DOMAIN} {
+	encode zstd gzip
+
+	# WebSocket 需要即时转发，绝不能缓冲。
+	reverse_proxy relay:8080 {
+		flush_interval -1
+	}
+
+	header {
+		-Server
+	}
+
+	log {
+		output stdout
+		format console
+	}
+}

@@ -1,0 +1,12 @@
+# 构建上下文是仓库根目录；镜像里只需要 Go 源码与模块文件。
+.git
+.github
+Docs
+data
+dist
+*.db
+*.test
+
+# 密钥绝不进镜像
+deploy/secrets
+deploy/.env

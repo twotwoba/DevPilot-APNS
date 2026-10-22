@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "kind": "event",
+  "msg_id": "0192f0c4-0000-7000-8000-000000000011",
+  "event_id": "0192f0c4-0000-7000-8000-000000000012",
+  "type": "task_complete",
+  "agent": "codex",
+  "daemon_id": "dd_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "session_id": "sess_01J9Z8K4T3M2N1P0Q7R6S5T4V4",
+  "seq": 1025,
+  "payload": {
+    "title": "迁移数据库",
+    "session_title": "迁移数据库",
+    "reply_summary": "已完成迁移，测试全部通过"
+  },
+  "ts": 1760770300
+}

@@ -1,0 +1,20 @@
+{
+  "v": 1,
+  "kind": "event",
+  "msg_id": "0192f0c4-0000-7000-8000-000000000001",
+  "event_id": "0192f0c4-0000-7000-8000-000000000002",
+  "approval_id": "apv_mfrggzdfmztwq2lknnwg23tpob",
+  "type": "approval_required",
+  "agent": "claude",
+  "daemon_id": "dd_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "session_id": "sess_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "seq": 1024,
+  "payload": {
+    "title": "重构支付模块",
+    "session_title": "重构支付模块",
+    "tool_name": "Bash",
+    "command_summary": "rm -rf build && make test",
+    "input_digest": "9f2c1a7b3d4e5f60"
+  },
+  "ts": 1760770000
+}

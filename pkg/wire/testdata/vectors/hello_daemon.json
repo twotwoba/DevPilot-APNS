@@ -1,0 +1,9 @@
+{
+  "v": 1,
+  "kind": "hello",
+  "msg_id": "0192f0c4-0000-7000-8000-000000000031",
+  "role": "daemon",
+  "daemon_id": "dd_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "last_ack_seq": 1023,
+  "ts": 1760770000
+}

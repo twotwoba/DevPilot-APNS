@@ -22,10 +22,57 @@ Claude Code/Codex hooks
 
 设计要点:审批链路任何环节超时 = 无决策回落终端原生询问(只会多问一次,不会放行);中继**只路由不读内容**——云通道只传「通知里你看得到的」摘要白名单;对标竞品 moshi 的云端中继。
 
+## 快速开始（部署）
+
+```bash
+git clone https://github.com/twotwoba/DevPilot-APNS.git
+cd DevPilot-APNS/deploy
+cp .env.example .env && chmod 600 .env   # 填 DOMAIN / APNS_KEY_ID / APNS_TEAM_ID
+mkdir -p secrets && chmod 700 secrets
+cp ~/Downloads/AuthKey_XXXX.p8 secrets/apns.p8 && chmod 600 secrets/apns.p8
+docker compose up -d --build
+curl -fsS https://relay.example.com/readyz
+```
+
+Caddy 负责 ACME TLS 与 WSS 反代（`flush_interval -1`），relay 以 distroless +
+nonroot、只读根文件系统运行。完整 EC2 运行手册、备份、监控与 `.p8` 创建清单见
+[deploy/README.md](deploy/README.md)。
+
+## 开发与测试
+
+```bash
+go test -race ./...            # 全部单测与集成测试
+go build ./cmd/relay           # 本地编译
+make docker                    # 构建镜像（需要 Docker 守护进程）
+```
+
+APNs 客户端可用 `APNS_MOCK=1` 在没有 `.p8` 的情况下跑通投递链路；单元测试用
+假 HTTP/2 服务器覆盖 200/410/429/403/400/5xx、JWT 缓存与 topic 退避。
+
+## 发布
+
+`git tag v0.1.0 && git push origin v0.1.0` 会触发：
+
+- `.github/workflows/docker.yml`：构建并推送 `ghcr.io/twotwoba/devpilot-relay`；
+- DevPilot-Hook 的发布依赖本仓库的 tag（`pkg/wire` 是它的模块依赖），
+  因此**必须先发布本仓库，再发布 Hook**。
+
+服务器升级用 `docker compose pull && docker compose up -d`。
+
 ## 当前状态
 
-- ✅ 设计文档(2026-10-18,评审稿 v1)
-- ⬜ R0–R3 实现未开工;与 DevPilot-Hook 均无外部阻塞,可并行开工(`pkg/wire` R0 先行)
+- ✅ `pkg/wire` v1：Envelope / Decision / Ack / Hello / Resync / LA token、
+  确定性 `approval_id`、摘要白名单、contract vectors
+- ✅ relay：配对（15 分钟一次性码、只存 `sha256(secret)`、轮换需旧凭据）、
+  bbolt（daemons / devices / pairing_codes / pending / inbox / la_tokens）、
+  WSS hub（心跳、鉴权、路由、决策 first-wins、断线补发、resync）、
+  `/healthz` `/readyz` `/metrics`
+- ✅ APNs：ES256 JWT（50 分钟缓存）、HTTP/2、64 并发闸、4KB 上限、
+  错误分类与退避、410 剪枝、审批/任务完成通知与 Live Activity 节流
+- ✅ 部署：Dockerfile（distroless + healthcheck 子命令）、compose + Caddy、
+  EC2 runbook、GHCR 发布工作流
+- ⬜ 真机 APNs sandbox 验证（需在 Apple Developer 创建 `.p8` 后执行）
+- ⬜ iOS App 的 relay 客户端与审批 UI（下一轮，DevPilot 仓库）
 
 ## 文档
 
