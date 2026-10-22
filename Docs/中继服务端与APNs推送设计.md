@@ -21,7 +21,7 @@ DevPilot-APNS 是部署在**云服务器 VPS** 上的推送中继(relay):左手�
 |---|---|---|---|
 | 形态 | iOS App(Swift/SwiftUI)| Go 常驻 daemon(用户开发机)| **Go relay(云 VPS)** |
 | 链路角色 | WSS 客户端(App 端):收推送、上行审批决策 | WSS 客户端(daemon 端):上行事件、收决策 | **中枢:鉴权、路由表、APNs 推送** |
-| 代码边界 | 终端/SSH/mosh、收件箱 UI、审批面板、Live Activity、RelayChannel 模型、device token 注册 | hook 适配(Claude Code/Codex)、本地网关 127.0.0.1:24543、事件聚合限流、离线缓冲 | relay 全部 + **`pkg/wire` 协议类型库(三端线上协议的单一事实源)** |
+| 代码边界 | 终端/SSH、收件箱 UI、审批面板、Live Activity、RelayChannel 模型、device token 注册 | hook 适配(Claude Code/Codex)、本地网关 127.0.0.1:24543、事件聚合限流、离线缓冲 | relay 全部 + **`pkg/wire` 协议类型库(三端线上协议的单一事实源)** |
 | 协议依赖 | 按 JSON 契约实现(Swift Codable 对照) | `go.mod` 引用本仓库 `pkg/wire` | 定义并持有 `pkg/wire` |
 
 ```

@@ -7,7 +7,7 @@ DevPilot 的**云端推送中继(relay)**:部署在 VPS 上的 Go 单二进制,�
 | | DevPilot | DevPilot-Hook | **DevPilot-APNS(本仓库)** |
 |---|---|---|---|
 | 形态 | iOS App(Swift/SwiftUI)| Go 常驻 daemon(用户开发机)| **Go relay(云 VPS)** |
-| 职责 | 终端/SSH/mosh、收件箱 UI、审批面板、Live Activity、APNs token 注册 | hook 适配(Claude Code/Codex)、本地网关、事件聚合限流、离线缓冲 | **WSS 接入、配对路由表、APNs 推送、Live Activity 远程更新转发** |
+| 职责 | 终端/SSH、收件箱 UI、审批面板、Live Activity、APNs token 注册 | hook 适配(Claude Code/Codex)、本地网关、事件聚合限流、离线缓冲 | **WSS 接入、配对路由表、APNs 推送、Live Activity 远程更新转发** |
 | 链路角色 | WSS 客户端(App 端) | WSS 客户端(daemon 端) | **中枢** |
 | 代码边界 | App 侧接入(RelayChannel 模型等)| daemon;`pkg/wire` 经 go.mod 引用本仓库 | relay 全部 + **`pkg/wire` 协议类型库(三端线上协议的单一事实源)** |
 
@@ -80,6 +80,6 @@ APNs 客户端可用 `APNS_MOCK=1` 在没有 `.p8` 的情况下跑通投递链�
 |---|---|
 | [中继服务端与APNs推送设计.md](Docs/中继服务端与APNs推送设计.md) | **核心设计**:组件骨架/WSS 协议/APNs 客户端/投递语义/里程碑,实现落本仓库 |
 | [DevPilot-Hook守护进程与推送中继设计.md](Docs/DevPilot-Hook守护进程与推送中继设计.md) | 上游总设计(daemon+relay 通盘;APNs 原理详解在其 §7),同步自 DevPilot 仓库 `Docs/` |
-| [Agent基建总纲与路线图.md](Docs/Agent基建总纲与路线图.md) | mosh × daemon+relay 两线总排期与三仓库代码边界,同步自 DevPilot 仓库 |
+| [Agent基建总纲与路线图.md](Docs/Agent基建总纲与路线图.md) | daemon+relay 线总排期与三仓库代码边界,同步自 DevPilot 仓库 |
 
-mosh 客户端设计(iOS 侧,与本仓库无实现交集)见 DevPilot 仓库 `Docs/Mosh客户端自研设计评审.md`。文档源头在 DevPilot 仓库 `Docs/`,本仓库 Docs 持同步副本。
+文档源头在 DevPilot 仓库 `Docs/`,本仓库 Docs 持同步副本。

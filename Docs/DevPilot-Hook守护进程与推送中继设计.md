@@ -3,7 +3,7 @@
 # DevPilot Hook 守护进程与推送中继设计(daemon + relay)
 
 > 状态:评审稿 v1(2026-10-18)|性质:决策 + 设计文档,**本期不含实现**
-> 关联:[Agent基建总纲与路线图.md](Agent基建总纲与路线图.md)|[Mosh客户端自研设计评审.md](Mosh客户端自研设计评审.md)
+> 关联:[Agent基建总纲与路线图.md](Agent基建总纲与路线图.md)
 > 对标:moshi-hook(Go 单二进制、win/mac/linux、WebSocket 连云端中继)
 > 仓库落位(2026-10-18 更新为三仓库):daemon 的 Go 实现落 **DevPilot-Hook**;relay 中继的 Go 实现落 **DevPilot-APNS**(实现级设计见该仓库 `Docs/中继服务端与APNs推送设计.md`,本文 §8 为概要);本仓库(DevPilot)承担 App 侧接入(RelayChannel 模型/云端通道页/收件箱/Live Activity push token 上报,§11)。文档源头在 DevPilot/Docs,两 Go 仓库 Docs 持同步副本。
 
@@ -400,7 +400,7 @@ updatedAt: Date    //              ← 中继打点时间
 | D4 | App 侧:云端通道页/收件箱/Live Activity 远程更新 | 2-2.5 |
 | D5 | 审批闭环端到端 + doctor + 压测(断连重放/限流验证) | 1.5-2 |
 
-**合计 ≈ 8-10 人周,无外部阻塞,可立即动工**(与 mosh 线的 spike 依赖对比见总纲)。
+**合计 ≈ 8-10 人周,无外部阻塞,可立即动工**。
 
 ---
 
