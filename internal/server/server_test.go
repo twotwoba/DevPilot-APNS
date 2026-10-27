@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -550,5 +551,96 @@ func TestEventRateLimitAck(t *testing.T) {
 	events, _, err := env.store.InboxSince(testDaemonID, 0, 0, 10)
 	if err != nil || len(events) != 3 {
 		t.Fatalf("收件箱应有 3 条: %d err=%v", len(events), err)
+	}
+}
+
+// TestDeviceLifecycle token 重报与设备自助解绑。
+func TestDeviceLifecycle(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	resp, body := env.post(t, "/v1/devices/token", map[string]any{"apns_token": "new-token-xyz"}, env.deviceCr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("token 重报 HTTP %d: %s", resp.StatusCode, body)
+	}
+	dev, err := env.store.Device(env.deviceID)
+	if err != nil || dev.APNSToken != "new-token-xyz" {
+		t.Fatalf("token 未更新: %+v %v", dev, err)
+	}
+	// 无凭据 401;空 token 400。
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": "x"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无凭据应 401: %d", resp.StatusCode)
+	}
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": " "}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("空 token 应 400: %d", resp.StatusCode)
+	}
+
+	// 自助解绑:设备与 LA token 级联删除。
+	req, err := http.NewRequest(http.MethodDelete, env.ts.URL+"/v1/device", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.deviceCr)
+	resp2, err := env.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusNoContent {
+		t.Fatalf("解绑 HTTP %d", resp2.StatusCode)
+	}
+	if _, err := env.store.Device(env.deviceID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("设备应已删除: %v", err)
+	}
+}
+
+// TestDeleteDaemonRevokesAll daemon 吊销:级联注销,daemon/device 凭据全部失效。
+func TestDeleteDaemonRevokesAll(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	req, err := http.NewRequest(http.MethodDelete, env.ts.URL+"/v1/daemon", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer "+env.cred)
+	resp, err := env.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("吊销 HTTP %d", resp.StatusCode)
+	}
+	if _, err := env.store.Daemon(testDaemonID); !errors.Is(err, store.ErrNotFound) {
+		t.Fatalf("daemon 应已级联注销: %v", err)
+	}
+	// 设备凭据随之失效。
+	req2, err := http.NewRequest(http.MethodGet, env.ts.URL+"/v1/pending", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req2.Header.Set("Authorization", "Bearer "+env.deviceCr)
+	resp2, err := env.client.Do(req2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	resp2.Body.Close()
+	if resp2.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("吊销后设备凭据应失效: %d", resp2.StatusCode)
+	}
+	// daemon 凭据同样失效(WS 401)。
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	_, wsResp, err := websocket.Dial(ctx, wsAddr(env.ts, "/ws/daemon"), &websocket.DialOptions{
+		HTTPHeader: http.Header{"Authorization": {"Bearer " + env.cred}},
+	})
+	if err == nil {
+		t.Fatal("吊销后 WS 应拒绝")
+	}
+	if wsResp == nil || wsResp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("吊销后 WS 应 401: %+v", wsResp)
 	}
 }

@@ -89,6 +89,9 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ws/app", s.handleAppWS)
 	mux.HandleFunc("POST /v1/la-tokens", s.handleLATokenREST)
 	mux.HandleFunc("GET /v1/pending", s.handlePending)
+	mux.HandleFunc("POST /v1/devices/token", s.handleDeviceToken)
+	mux.HandleFunc("DELETE /v1/device", s.handleDeleteDevice)
+	mux.HandleFunc("DELETE /v1/daemon", s.handleDeleteDaemon)
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
@@ -234,6 +237,10 @@ func (s *Server) handleDaemonWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "daemon 凭据无效")
 		return
 	}
+	// 建连即刷新活跃时刻,TTL 清理据此判定存续。
+	if err := s.cfg.Store.TouchDaemon(daemon.ID, s.now().Unix()); err != nil {
+		s.log.Warn("刷新 daemon 活跃时刻失败", "daemon_id", daemon.ID, "err", err)
+	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
@@ -346,6 +353,66 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 		result.NextCursor = strconv.FormatInt(next, 10)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// ---------- 生命周期 ----------
+
+type deviceTokenRequest struct {
+	APNSToken string `json:"apns_token"`
+}
+
+// handleDeviceToken App 重新上报 APNs token(410 剪枝后、重装、换机)。
+func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
+	device, ok := s.authDevice(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		return
+	}
+	var req deviceTokenRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	token := strings.TrimSpace(req.APNSToken)
+	if token == "" || len(token) > 256 {
+		writeError(w, http.StatusBadRequest, "apns_token 不合法")
+		return
+	}
+	if err := s.cfg.Store.UpdateDeviceAPNSToken(device.ID, token, s.now().Unix()); err != nil {
+		s.internal(w, "更新 APNs token 失败", err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteDevice 设备自助解绑:级联删 LA token,凭据即刻失效。
+func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
+	device, ok := s.authDevice(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		return
+	}
+	if err := s.cfg.Store.DeleteDevice(device.ID); err != nil {
+		s.internal(w, "解绑设备失败", err)
+		return
+	}
+	s.log.Info("设备已解绑", "device_id", device.ID, "daemon_id", device.DaemonID)
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// handleDeleteDaemon daemon 吊销(devpilot-hook unpair 调用):
+// 级联删 devices/la_tokens/inbox/event_ids/pending。
+func (s *Server) handleDeleteDaemon(w http.ResponseWriter, r *http.Request) {
+	daemon, ok := s.authDaemon(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "daemon 凭据无效")
+		return
+	}
+	if err := s.cfg.Store.DeleteDaemonCascade(daemon.ID); err != nil {
+		s.internal(w, "吊销 daemon 失败", err)
+		return
+	}
+	s.log.Info("daemon 已吊销", "daemon_id", daemon.ID)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // ---------- 健康检查与指标 ----------

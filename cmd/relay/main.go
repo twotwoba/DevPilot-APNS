@@ -193,6 +193,31 @@ func runServe(args []string) int {
 		}
 	}()
 
+	// 身份 TTL 清理(小时级):超期未连接的 daemon 级联注销,0 天=禁用。
+	daemonTTL := time.Duration(cfg.DaemonTTLDays) * 24 * time.Hour
+	deviceTTL := time.Duration(cfg.DeviceTTLDays) * 24 * time.Hour
+	if daemonTTL > 0 || deviceTTL > 0 {
+		go func() {
+			ticker := time.NewTicker(time.Hour)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-ticker.C:
+					removedD, removedDev, err := st.CleanupIdentities(now().Unix(), daemonTTL, deviceTTL)
+					if err != nil {
+						logger.Warn("身份 TTL 清理失败", "err", err)
+						continue
+					}
+					if removedD > 0 || removedDev > 0 {
+						logger.Info("身份 TTL 清理完成", "daemons", removedD, "devices", removedDev)
+					}
+				}
+			}
+		}()
+	}
+
 	errCh := make(chan error, 1)
 	go func() {
 		logger.Info("relay 启动", "listen", cfg.ListenAddr, "data_dir", cfg.DataDir,

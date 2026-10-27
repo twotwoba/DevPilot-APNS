@@ -32,6 +32,10 @@ type Config struct {
 	QuotaDailyPro   int64         // pro 档 UTC 日推送上限
 	// QuotaExemptApprovals 时审批类事件豁免速率闸(不豁免日配额)。
 	QuotaExemptApprovals bool
+
+	// —— 生命周期 TTL(天;0=禁用,首发部署保持 0 观察)——
+	DaemonTTLDays int
+	DeviceTTLDays int
 }
 
 // FromEnv 读取环境变量并做基本校验。
@@ -73,6 +77,12 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	if c.QuotaExemptApprovals, err = envBool("QUOTA_EXEMPT_APPROVALS", true); err != nil {
+		return nil, err
+	}
+	if c.DaemonTTLDays, err = envInt("DAEMON_TTL_DAYS", 0); err != nil {
+		return nil, err
+	}
+	if c.DeviceTTLDays, err = envInt("DEVICE_TTL_DAYS", 0); err != nil {
 		return nil, err
 	}
 
