@@ -53,6 +53,8 @@ func run(args []string) int {
 		return runHealthcheck()
 	case "snapshot":
 		return runSnapshot(args)
+	case "test-push":
+		return runTestPush(args)
 	case "version", "--version", "-v":
 		fmt.Println(Version)
 		return 0
@@ -73,6 +75,8 @@ func usage() {
   devpilot-relay serve       启动 relay（环境变量配置）
   devpilot-relay healthcheck 检查 /healthz（容器用）
   devpilot-relay snapshot    导出 bbolt 快照 [--out PATH]
+  devpilot-relay test-push   真机验证触发工具
+                             [--relay URL] [--credential dpd_...] [--kind approval|task]
   devpilot-relay version
 `)
 }
@@ -174,8 +178,8 @@ func runServe(args []string) int {
 	srv, err := server.New(server.Config{
 		Store: st, Hub: hub, Metrics: m, Logger: logger,
 		PublicBaseURL: cfg.PublicBaseURL, Now: now, Ready: ready,
-		PairLimiter:    ratelimit.New(cfg.PairSessionLimit, time.Minute, now),
-		AttemptLimiter: ratelimit.New(cfg.PairAttemptLimit, time.Minute, now),
+		PairLimiter:       ratelimit.New(cfg.PairSessionLimit, time.Minute, now),
+		AttemptLimiter:    ratelimit.New(cfg.PairAttemptLimit, time.Minute, now),
 		Bans:              bans,
 		TrustedProxyCount: cfg.TrustedProxyCount,
 		MetricsToken:      cfg.MetricsToken,

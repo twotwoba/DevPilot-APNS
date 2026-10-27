@@ -8,7 +8,7 @@ import (
 // fakeClock 单线程测试用假时钟。
 type fakeClock struct{ t time.Time }
 
-func (c *fakeClock) Now() time.Time      { return c.t }
+func (c *fakeClock) Now() time.Time          { return c.t }
 func (c *fakeClock) Advance(d time.Duration) { c.t = c.t.Add(d) }
 
 func newBan(t *testing.T, mutate func(*BanConfig)) (*BanManager, *fakeClock) {
