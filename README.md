@@ -27,7 +27,7 @@ Claude Code/Codex hooks
 ```bash
 git clone https://github.com/twotwoba/DevPilot-APNS.git
 cd DevPilot-APNS/deploy
-cp .env.example .env && chmod 600 .env   # 填 DOMAIN / APNS_KEY_ID / APNS_TEAM_ID
+cp .env.example .env && chmod 600 .env   # 填 DOMAIN / APNS_KEY_ID / APNS_TEAM_ID / METRICS_TOKEN
 mkdir -p secrets && chmod 700 secrets
 cp ~/Downloads/AuthKey_XXXX.p8 secrets/apns.p8 && chmod 600 secrets/apns.p8
 docker compose up -d --build
@@ -35,8 +35,32 @@ curl -fsS https://relay.example.com/readyz
 ```
 
 Caddy 负责 ACME TLS 与 WSS 反代（`flush_interval -1`），relay 以 distroless +
-nonroot、只读根文件系统运行。完整 EC2 运行手册、备份、监控与 `.p8` 创建清单见
-[deploy/README.md](deploy/README.md)。
+nonroot、只读根文件系统运行。**反代下务必 `TRUSTED_PROXY_COUNT=1`**（.env.example
+已带），relay 才能从 XFF 还原真实客户端 IP 做限流与封禁。完整 EC2 运行手册、
+备份、监控与 `.p8` 创建清单见 [deploy/README.md](deploy/README.md)。
+
+Mac 端配对后可用 `test-push` 做真机验证（默认 relay 地址取 `PUBLIC_BASE_URL`）：
+
+```bash
+devpilot-relay test-push --relay https://relay.example.com \
+  --credential dpd_... --kind approval   # iPhone 收到 time-sensitive 通知
+```
+
+## 配额与防滥用（多租户托管）
+
+面向「一个 relay 服务所有用户」的默认设计；自部署单人场景可全部关闭（阈值为 0）。
+
+| 维度 | 默认值 | 环境变量 | 语义 |
+|---|---|---|---|
+| 事件速率 | free 10/60s、pro 60/60s | `RATE_EVENT_FREE/PRO`、`RATE_EVENT_WINDOW_SECONDS` | per-daemon 令牌桶,超限回 `AckRejected`(daemon 终态丢弃,无重试风暴) |
+| 日推送配额 | free 500/天、pro 5000/天 | `QUOTA_DAILY_FREE/PRO` | per-daemon UTC 日历日,只拦 APNs 推送;WSS 实时/收件箱/resync 不受限 |
+| 审批豁免 | 开 | `QUOTA_EXEMPT_APPROVALS` | `approval_required/task_complete` 豁免速率闸,**不**豁免日配额 |
+| 配对限流 | 15/10 每分钟每 IP | `PAIR_SESSION_LIMIT/PAIR_ATTEMPT_LIMIT` | 固定窗口 |
+| IP 封禁 | 100 次 4xx·5xx/5min → 封 24h | `BAN_THRESHOLD/WINDOW_SECONDS/TTL_SECONDS`、`BAN_ENABLED` | fail2ban 式;IPv4 整段、IPv6 /64 聚合;环回豁免 |
+| 身份 TTL | 0(禁用) | `DAEMON_TTL_DAYS/DEVICE_TTL_DAYS` | 超期未连接的 daemon 级联注销;首发保持 0,稳定后再开 |
+| /metrics | 公开 | `METRICS_TOKEN` | 非空时需 Bearer;Caddy 层另有 404 兜底 |
+
+档位(`free|pro`)在 App 配对时提交,v0.2 为客户端自声明;收据级验证列入下一轮。
 
 ## 开发与测试
 
@@ -69,10 +93,15 @@ APNs 客户端可用 `APNS_MOCK=1` 在没有 `.p8` 的情况下跑通投递链�
   `/healthz` `/readyz` `/metrics`
 - ✅ APNs：ES256 JWT（50 分钟缓存）、HTTP/2、64 并发闸、4KB 上限、
   错误分类与退避、410 剪枝、审批/任务完成通知与 Live Activity 节流
+- ✅ 托管多租户（v0.2.0）：per-daemon 配额（令牌桶 + UTC 日配额，审批豁免速率闸）、
+  fail2ban 封禁（IPv6 /64 聚合）、XFF 可信代理链（`TRUSTED_PROXY_COUNT`）、
+  生命周期端点（token 重报 / 设备解绑 / daemon 吊销）、schema v1→v2 迁移
+  （`Tier`/`LastSeenAt` 回填）、身份 TTL 清理、`test-push` 真机验证工具
 - ✅ 部署：Dockerfile（distroless + healthcheck 子命令）、compose + Caddy、
   EC2 runbook、GHCR 发布工作流
-- ⬜ 真机 APNs sandbox 验证（需在 Apple Developer 创建 `.p8` 后执行）
-- ⬜ iOS App 的 relay 客户端与审批 UI（下一轮，DevPilot 仓库）
+- ⬜ 真机 APNs sandbox 验证（EC2 部署 + DevPilot App 配对后执行）
+- ⬜ iOS App 的 relay 客户端与审批 UI（进行中,DevPilot 仓库）
+- ⬜ tier 收据级验证（当前为客户端自声明）
 
 ## 文档
 

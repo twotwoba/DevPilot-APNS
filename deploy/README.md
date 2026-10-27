@@ -27,7 +27,8 @@ cp .env.example .env && chmod 600 .env
 mkdir -p secrets && chmod 700 secrets
 # 把下载到的 AuthKey_XXXX.p8 复制为 secrets/apns.p8
 cp ~/Downloads/AuthKey_XXXX.p8 secrets/apns.p8 && chmod 600 secrets/apns.p8
-$EDITOR .env   # 填 DOMAIN / APNS_KEY_ID / APNS_TEAM_ID
+$EDITOR .env   # 填 DOMAIN / APNS_KEY_ID / APNS_TEAM_ID / METRICS_TOKEN
+               # TRUSTED_PROXY_COUNT=1(Caddy 反代下必须,还原真实客户端 IP)
 ```
 
 Linux 上 bind mount 会保留宿主文件属主，而镜像以 distroless 的 `nonroot`
