@@ -19,6 +19,7 @@ import (
 
 	"github.com/twotwoba/DevPilot-APNS/internal/apns"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
+	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
 )
@@ -48,6 +49,7 @@ type Config struct {
 	Pusher   Pusher
 	Metrics  *metrics.Metrics
 	Logger   *slog.Logger
+	Quota    *quota.Engine
 	Now      func() time.Time
 	Throttle time.Duration
 }
@@ -91,14 +93,24 @@ func (d *Deliverer) Notify(ctx context.Context, device store.Device, env wire.En
 		ctx = context.Background()
 	}
 	if device.APNSToken != "" {
-		d.sendAlert(device, env)
+		d.sendAlert(d.tierOf(env.DaemonID), device, env)
 	}
 	// 没有 alert token 的设备仍可能注册了 Live Activity token。
-	d.sendLiveActivity(device, env)
+	d.sendLiveActivity(d.tierOf(env.DaemonID), device, env)
+}
+
+// tierOf 读取 daemon 档位；记录不存在（已注销级联）按 free——
+// 该 daemon 本就不该再推送，free 恰是最严档。
+func (d *Deliverer) tierOf(daemonID string) store.Tier {
+	daemon, err := d.cfg.Store.Daemon(daemonID)
+	if err != nil {
+		return store.TierFree
+	}
+	return daemon.Tier
 }
 
 // sendAlert 只对审批与任务完成发通知。
-func (d *Deliverer) sendAlert(device store.Device, env wire.Envelope) {
+func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Envelope) {
 	now := d.now().Unix()
 	var (
 		payload    map[string]any
@@ -167,7 +179,7 @@ func (d *Deliverer) sendAlert(device store.Device, env wire.Envelope) {
 		return
 	}
 
-	res := d.push(approvalPushKind, device.ID, env, apns.Request{
+	res := d.push(tier, approvalPushKind, device.ID, env, apns.Request{
 		DeviceToken: device.APNSToken,
 		Topic:       d.cfg.Pusher.TopicFor(),
 		PushType:    "alert",
@@ -202,7 +214,7 @@ func approvalBody(env wire.Envelope) string {
 }
 
 // sendLiveActivity 把事件转发到该设备当前会话的 LA token。
-func (d *Deliverer) sendLiveActivity(device store.Device, env wire.Envelope) {
+func (d *Deliverer) sendLiveActivity(tier store.Tier, device store.Device, env wire.Envelope) {
 	tokens, err := d.cfg.Store.LATokensForDaemon(env.DaemonID)
 	if err != nil {
 		d.log.Warn("读取 Live Activity token 失败", "daemon_id", env.DaemonID, "err", err)
@@ -224,7 +236,7 @@ func (d *Deliverer) sendLiveActivity(device store.Device, env wire.Envelope) {
 		token, session := tok.PushToken, tok.SessionID
 		key := device.ID + "/" + session
 		d.throttle.Do(key, func() {
-			res := d.push(laPushKind, device.ID, env, apns.Request{
+			res := d.push(tier, laPushKind, device.ID, env, apns.Request{
 				DeviceToken: token,
 				Topic:       d.cfg.Pusher.LiveActivityTopic(),
 				PushType:    "liveactivity",
@@ -243,7 +255,15 @@ func (d *Deliverer) sendLiveActivity(device store.Device, env wire.Envelope) {
 }
 
 // push 发送一条 APNs 请求并记录指标。
-func (d *Deliverer) push(kind, deviceID string, env wire.Envelope, req apns.Request) apns.Result {
+func (d *Deliverer) push(tier store.Tier, kind, deviceID string, env wire.Envelope, req apns.Request) apns.Result {
+	// 日配额闸在 APNs 发送之前：这是 APNs 成本唯一漏斗。被拒只计数，
+	// 不触碰 token；实时 WSS/inbox/resync 不受影响，App 前台仍可审批（fail-safe）。
+	if d.cfg.Quota != nil && !d.cfg.Quota.AllowPush(tier, env.DaemonID) {
+		d.cfg.Metrics.IncQuotaRejected("push_" + kind)
+		d.log.Info("推送被日配额拦截", "kind", kind, "daemon_id", env.DaemonID,
+			"device_id", deviceID, "event_id", env.EventID)
+		return apns.Result{}
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), pushTimeout)
 	defer cancel()
 	res, err := d.cfg.Pusher.Send(ctx, req)

@@ -12,6 +12,7 @@ import (
 
 	"github.com/twotwoba/DevPilot-APNS/internal/id"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
+	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
 )
@@ -37,7 +38,9 @@ type Config struct {
 	Logger   *slog.Logger
 	Metrics  *metrics.Metrics
 	Notifier Notifier
-	Now      func() time.Time
+	// Quota 为空表示不限流(自部署单用户场景可关)。
+	Quota *quota.Engine
+	Now   func() time.Time
 }
 
 // Hub 维护在线连接并驱动事件/决策路由。
@@ -83,6 +86,7 @@ type Conn struct {
 	Role     wire.Role
 	ID       string
 	DaemonID string
+	Tier     store.Tier // daemon 连接缓存档位(App 连接为空,事件只来自 daemon)
 
 	ws   *websocket.Conn
 	out  chan []byte
@@ -90,10 +94,10 @@ type Conn struct {
 	once sync.Once
 }
 
-// Serve 处理一条已鉴权连接直到断开。
-func (h *Hub) Serve(parent context.Context, ws *websocket.Conn, role wire.Role, id, daemonID string) {
+// Serve 处理一条已鉴权连接直到断开。tier 为 daemon 的配额档位,建连时缓存。
+func (h *Hub) Serve(parent context.Context, ws *websocket.Conn, role wire.Role, id, daemonID string, tier store.Tier) {
 	c := &Conn{
-		Role: role, ID: id, DaemonID: daemonID,
+		Role: role, ID: id, DaemonID: daemonID, Tier: tier,
 		ws: ws, out: make(chan []byte, outBuffer), done: make(chan struct{}),
 	}
 	h.register(c)

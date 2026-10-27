@@ -11,6 +11,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/apns"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/pairing"
+	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
 )
@@ -80,10 +81,14 @@ func setupStore(t *testing.T, apnsToken string) (*store.Store, store.Device) {
 }
 
 func newDeliverer(t *testing.T, s *store.Store, p Pusher, clock *testClock, throttle time.Duration) (*Deliverer, *metrics.Metrics) {
+	return newDelivererWithQuota(t, s, p, clock, throttle, nil)
+}
+
+func newDelivererWithQuota(t *testing.T, s *store.Store, p Pusher, clock *testClock, throttle time.Duration, eng *quota.Engine) (*Deliverer, *metrics.Metrics) {
 	t.Helper()
 	m := metrics.New()
 	d := New(Config{
-		Store: s, Pusher: p, Metrics: m,
+		Store: s, Pusher: p, Metrics: m, Quota: eng,
 		Now: clock.Now, Throttle: throttle,
 	})
 	return d, m
@@ -296,6 +301,56 @@ func TestDeviceWithoutAlertTokenStillGetsLiveActivity(t *testing.T) {
 	req := f.snapshot()[0]
 	if req.PushType != "liveactivity" || req.DeviceToken != "la-token" {
 		t.Fatalf("req = %+v", req)
+	}
+}
+
+// TestDailyQuotaBlocksAlert 日配额打满后 alert 不再发,APNs 零调用。
+func TestDailyQuotaBlocksAlert(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	f := &fakePusher{}
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	eng := quota.New(quota.Config{QuotaDailyFree: 1, Now: clock.Now})
+	d, m := newDelivererWithQuota(t, s, f, clock, time.Second, eng)
+
+	// alert 路径同步执行:第一条发出,第二条被日配额拦截。
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_1"))
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_2"))
+	if calls := f.snapshot(); len(calls) != 1 {
+		t.Fatalf("calls = %d, want 1", len(calls))
+	}
+	if !strings.Contains(m.Render(), `devpilot_quota_rejected_total{kind="push_alert"} 1`) {
+		t.Fatalf("metrics 缺少配额拒绝计数:\n%s", m.Render())
+	}
+	// 被拒推送不触碰 token(无 prune 副作用)。
+	got, err := s.Device(dev.ID)
+	if err != nil || got.APNSToken != "apns-token" {
+		t.Fatalf("token 不应被改动: %+v %v", got, err)
+	}
+}
+
+// TestDailyQuotaBlocksLiveActivity 日配额同样约束 LA 推送(最频繁的成本来源)。
+func TestDailyQuotaBlocksLiveActivity(t *testing.T) {
+	s, dev := setupStore(t, "")
+	if err := s.PutLAToken(store.LAToken{
+		DeviceID: dev.ID, DaemonID: testDaemon, SessionID: "sess_1",
+		PushToken: "la-token", UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakePusher{}
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	eng := quota.New(quota.Config{QuotaDailyFree: 1, Now: clock.Now})
+	d, m := newDelivererWithQuota(t, s, f, clock, 10*time.Millisecond, eng)
+
+	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
+	waitFor(t, "第一次 LA 推送", func() bool { return len(f.snapshot()) == 1 })
+	d.Notify(context.Background(), dev, event(wire.EventToolFinished, ""))
+	time.Sleep(100 * time.Millisecond)
+	if calls := f.snapshot(); len(calls) != 1 {
+		t.Fatalf("日配额打满后 LA 推送应被拦截: %d", len(calls))
+	}
+	if !strings.Contains(m.Render(), `devpilot_quota_rejected_total{kind="push_liveactivity"} 1`) {
+		t.Fatalf("metrics 缺少 LA 配额拒绝计数:\n%s", m.Render())
 	}
 }
 

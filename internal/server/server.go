@@ -242,7 +242,7 @@ func (s *Server) handleDaemonWS(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("daemon 已连接", "daemon_id", daemon.ID)
-	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleDaemon, daemon.ID, daemon.ID)
+	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleDaemon, daemon.ID, daemon.ID, daemon.Tier)
 	s.log.Info("daemon 已断开", "daemon_id", daemon.ID)
 }
 
@@ -261,7 +261,7 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 	}
 	_ = s.cfg.Store.TouchDevice(device.ID, s.now().Unix())
 	s.log.Info("App 已连接", "device_id", device.ID, "daemon_id", device.DaemonID)
-	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleApp, device.ID, device.DaemonID)
+	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleApp, device.ID, device.DaemonID, "")
 	s.log.Info("App 已断开", "device_id", device.ID)
 }
 

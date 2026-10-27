@@ -15,6 +15,15 @@ func (h *Hub) onEvent(ctx context.Context, c *Conn, env *wire.Envelope) {
 		h.ack(c, env.MsgID, env.EventID, env.ApprovalID, wire.AckRejected)
 		return
 	}
+	// 速率闸最前、AppendInbox 之前：被拒不烧 seq、不写收件箱、不扇出 APNs。
+	// daemon 收到 rejected 即终态丢弃（删 WAL），无重试风暴。
+	if h.cfg.Quota != nil && !h.cfg.Quota.AllowEvent(c.Tier, c.DaemonID, env.Type) {
+		h.cfg.Metrics.IncQuotaRejected("rate_event")
+		h.log.Warn("事件被速率闸拒绝", "daemon_id", c.DaemonID,
+			"event_id", env.EventID, "type", env.Type)
+		h.ack(c, env.MsgID, env.EventID, env.ApprovalID, wire.AckRejected)
+		return
+	}
 	now := h.now().Unix()
 	stored, duplicate, err := h.cfg.Store.AppendInbox(c.DaemonID, *env, now)
 	if err != nil {

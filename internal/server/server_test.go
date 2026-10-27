@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -16,6 +17,7 @@ import (
 
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/pairing"
+	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
@@ -43,6 +45,10 @@ func newTestEnv(t *testing.T) *testEnv {
 }
 
 func newTestEnvWithNotifier(t *testing.T, notifier wss.Notifier) *testEnv {
+	return newTestEnvFull(t, notifier, nil)
+}
+
+func newTestEnvFull(t *testing.T, notifier wss.Notifier, q *quota.Engine) *testEnv {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
@@ -50,7 +56,7 @@ func newTestEnvWithNotifier(t *testing.T, notifier wss.Notifier) *testEnv {
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	m := metrics.New()
-	hub := wss.New(wss.Config{Store: st, Metrics: m, Notifier: notifier})
+	hub := wss.New(wss.Config{Store: st, Metrics: m, Notifier: notifier, Quota: q})
 	srv, err := New(Config{Store: st, Hub: hub, Metrics: m})
 	if err != nil {
 		t.Fatal(err)
@@ -494,5 +500,55 @@ func TestLATokenREST(t *testing.T) {
 	tokens, _ = env.store.LATokensForDaemon(testDaemonID)
 	if len(tokens) != 0 {
 		t.Fatal("LA token 未删除")
+	}
+}
+
+// TestEventRateLimitAck 端到端验证速率闸:超限回 AckRejected 且不落库,审批类豁免。
+func TestEventRateLimitAck(t *testing.T) {
+	eng := quota.New(quota.Config{
+		RateEventFree: 2, RateEventPro: 2, RateEventWindow: time.Minute,
+		QuotaDailyFree: 100, QuotaDailyPro: 100,
+		ExemptApprovals: true,
+	})
+	env := newTestEnvFull(t, nil, eng)
+	env.registerAndPair(t) // 未传 tier → free 档
+
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_rl_hello",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+
+	mk := func(i int, typ wire.EventType) wire.Envelope {
+		return wire.Envelope{
+			V: wire.Version, Kind: wire.KindEvent,
+			MsgID: fmt.Sprintf("m_rl_%d", i), EventID: fmt.Sprintf("ev_rl_%d", i),
+			ApprovalID: fmt.Sprintf("apv_rl_%d", i), Type: typ, Agent: wire.AgentClaude,
+			DaemonID: testDaemonID, SessionID: "sess_1", TS: time.Now().Unix(),
+			Payload: wire.Payload{ToolName: "Bash"},
+		}
+	}
+	for i := 1; i <= 2; i++ {
+		send(t, daemon, mk(i, wire.EventToolRunning))
+		ack, ok := recv(t, daemon).(*wire.Ack)
+		if !ok || ack.Status != wire.AckAccepted {
+			t.Fatalf("事件 %d 应放行: %+v", i, ack)
+		}
+	}
+	send(t, daemon, mk(3, wire.EventToolRunning))
+	ack, ok := recv(t, daemon).(*wire.Ack)
+	if !ok || ack.Status != wire.AckRejected {
+		t.Fatalf("第 3 个事件应被速率闸拒绝: %+v", ack)
+	}
+	// 审批类豁免速率闸。
+	send(t, daemon, mk(4, wire.EventApprovalRequired))
+	ack, ok = recv(t, daemon).(*wire.Ack)
+	if !ok || ack.Status != wire.AckAccepted {
+		t.Fatalf("审批事件应豁免放行: %+v", ack)
+	}
+	// 被拒事件不落库:收件箱只有 2 条遥测 + 1 条审批。
+	events, _, err := env.store.InboxSince(testDaemonID, 0, 0, 10)
+	if err != nil || len(events) != 3 {
+		t.Fatalf("收件箱应有 3 条: %d err=%v", len(events), err)
 	}
 }

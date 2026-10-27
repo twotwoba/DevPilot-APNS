@@ -26,6 +26,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/config"
 	"github.com/twotwoba/DevPilot-APNS/internal/deliver"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
+	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/server"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
@@ -101,6 +102,20 @@ func runServe(args []string) int {
 
 	m := metrics.New()
 
+	// 托管多租户配额：事件速率 + 日推送上限,内存态(阈值见 config 注释)。
+	eng := quota.New(quota.Config{
+		RateEventFree:   cfg.RateEventFree,
+		RateEventPro:    cfg.RateEventPro,
+		RateEventWindow: cfg.RateEventWindow,
+		QuotaDailyFree:  cfg.QuotaDailyFree,
+		QuotaDailyPro:   cfg.QuotaDailyPro,
+		ExemptApprovals: cfg.QuotaExemptApprovals,
+		Now:             now,
+	})
+	logger.Info("配额参数", "rate_free", cfg.RateEventFree, "rate_pro", cfg.RateEventPro,
+		"window", cfg.RateEventWindow.String(), "daily_free", cfg.QuotaDailyFree,
+		"daily_pro", cfg.QuotaDailyPro, "exempt_approvals", cfg.QuotaExemptApprovals)
+
 	// P4：APNs 投递。未配置凭据时降级为仅 WSS（App 在线仍可用）。
 	var (
 		notifier wss.Notifier
@@ -121,7 +136,7 @@ func runServe(args []string) int {
 			return 1
 		}
 		notifier = deliver.New(deliver.Config{
-			Store: st, Pusher: client, Metrics: m, Logger: logger, Now: now,
+			Store: st, Pusher: client, Metrics: m, Logger: logger, Quota: eng, Now: now,
 		})
 		apnsOK = client.Healthy
 		logger.Info("APNs 已启用", "mock", cfg.APNSMock, "environment", cfg.APNSEnvironment)
@@ -134,6 +149,7 @@ func runServe(args []string) int {
 		Logger:   logger,
 		Metrics:  m,
 		Notifier: notifier,
+		Quota:    eng,
 		Now:      now,
 	})
 	ready := func() error {

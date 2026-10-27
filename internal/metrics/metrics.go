@@ -14,6 +14,7 @@ type Metrics struct {
 	events    sync.Map // type -> *atomic.Int64
 	decisions sync.Map // decision|status -> *atomic.Int64
 	pushes    sync.Map // kind|status -> *atomic.Int64
+	quota     sync.Map // kind -> *atomic.Int64
 	resyncs   atomic.Int64
 	dedupHits atomic.Int64
 
@@ -45,6 +46,11 @@ func (m *Metrics) IncPush(kind, status string) {
 	inc(&m.pushes, kind+"|"+status)
 }
 
+// IncQuotaRejected 记录一次被配额闸拒绝的请求
+// (kind=rate_event|push_alert|push_liveactivity)。
+// 不加 per-daemon label:基数风险,排障走结构化日志。
+func (m *Metrics) IncQuotaRejected(kind string) { inc(&m.quota, kind) }
+
 // Render 输出 Prometheus 文本格式。
 func (m *Metrics) Render() string {
 	var b strings.Builder
@@ -62,6 +68,9 @@ func (m *Metrics) Render() string {
 
 	b.WriteString("# HELP devpilot_apns_pushes_total APNs 投递结果\n# TYPE devpilot_apns_pushes_total counter\n")
 	writePushes(&b, &m.pushes)
+
+	b.WriteString("# HELP devpilot_quota_rejected_total 被配额闸拒绝的请求数\n# TYPE devpilot_quota_rejected_total counter\n")
+	writeCounters(&b, "devpilot_quota_rejected_total", "kind", &m.quota)
 
 	if m.DaemonConns != nil {
 		b.WriteString("# HELP devpilot_daemon_connections 在线 daemon 连接数\n# TYPE devpilot_daemon_connections gauge\n")
