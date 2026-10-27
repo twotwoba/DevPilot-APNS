@@ -22,6 +22,7 @@ type Metrics struct {
 	DaemonConns func() int
 	AppConns    func() int
 	Pending     func() int
+	BansActive  func() int
 }
 
 // New 创建指标集合。
@@ -83,6 +84,10 @@ func (m *Metrics) Render() string {
 	if m.Pending != nil {
 		b.WriteString("# HELP devpilot_pending_approvals 等待中的审批数\n# TYPE devpilot_pending_approvals gauge\n")
 		fmt.Fprintf(&b, "devpilot_pending_approvals %d\n", m.Pending())
+	}
+	if m.BansActive != nil {
+		b.WriteString("# HELP devpilot_ban_active 当前封禁中的 IP 聚合数\n# TYPE devpilot_ban_active gauge\n")
+		fmt.Fprintf(&b, "devpilot_ban_active %d\n", m.BansActive())
 	}
 	return b.String()
 }

@@ -36,6 +36,16 @@ type Config struct {
 	// —— 生命周期 TTL(天;0=禁用,首发部署保持 0 观察)——
 	DaemonTTLDays int
 	DeviceTTLDays int
+
+	// —— 防滥用与运维 ——
+	TrustedProxyCount int // TRUSTED_PROXY_COUNT 可信反代数(Caddy 部署设 1;0=忽略 XFF)
+	PairSessionLimit  int // 每 IP 每分钟配对会话登记
+	PairAttemptLimit  int // 每 IP 每分钟配对尝试
+	BanEnabled        bool
+	BanThreshold      int   // 窗口内 4xx/5xx 次数阈值
+	BanWindowSeconds  int64 // 失败计数窗口
+	BanTTLSeconds     int64 // 封禁时长
+	MetricsToken      string
 }
 
 // FromEnv 读取环境变量并做基本校验。
@@ -85,6 +95,30 @@ func FromEnv() (*Config, error) {
 	if c.DeviceTTLDays, err = envInt("DEVICE_TTL_DAYS", 0); err != nil {
 		return nil, err
 	}
+
+	// 防滥用参数:锚点 Bark「5min 1000 次失败 → 封 24h」,阈值放宽到 100 次防误伤共享 NAT。
+	if c.TrustedProxyCount, err = envInt("TRUSTED_PROXY_COUNT", 0); err != nil {
+		return nil, err
+	}
+	if c.PairSessionLimit, err = envInt("PAIR_SESSION_LIMIT", 15); err != nil {
+		return nil, err
+	}
+	if c.PairAttemptLimit, err = envInt("PAIR_ATTEMPT_LIMIT", 10); err != nil {
+		return nil, err
+	}
+	if c.BanEnabled, err = envBool("BAN_ENABLED", true); err != nil {
+		return nil, err
+	}
+	if c.BanThreshold, err = envInt("BAN_THRESHOLD", 100); err != nil {
+		return nil, err
+	}
+	if c.BanWindowSeconds, err = envInt64("BAN_WINDOW_SECONDS", 300); err != nil {
+		return nil, err
+	}
+	if c.BanTTLSeconds, err = envInt64("BAN_TTL_SECONDS", 86400); err != nil {
+		return nil, err
+	}
+	c.MetricsToken = env("METRICS_TOKEN", "")
 
 	switch c.APNSEnvironment {
 	case "production", "sandbox":

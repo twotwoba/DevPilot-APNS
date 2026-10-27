@@ -3,6 +3,7 @@ package server
 
 import (
 	"bufio"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -28,8 +29,9 @@ import (
 const (
 	maxBodyBytes = 64 << 10
 	maxNameRunes = 80
-	pairLimit    = 30 // 每 IP 每分钟
-	pairAttempts = 20
+	// 配对端点限流收紧(防爆破,锚点 fail2ban 宽于人工误操作)。
+	pairLimit    = 15 // 每 IP 每分钟
+	pairAttempts = 10
 )
 
 // Config 是 server 依赖。
@@ -42,6 +44,12 @@ type Config struct {
 	Now            func() time.Time
 	PairLimiter    *ratelimit.Limiter
 	AttemptLimiter *ratelimit.Limiter
+	// Bans 非 nil 时启用 fail2ban 式 IP 封禁;TrustedProxyCount 是可信反代数
+	// (Caddy 部署设 1;0 表示忽略 X-Forwarded-For)。
+	Bans              *ratelimit.BanManager
+	TrustedProxyCount int
+	// MetricsToken 非空时 /metrics 需要 Bearer(常量时间比较)。
+	MetricsToken string
 	// Ready 是额外的就绪检查（如 APNs 密钥可用性）；为空时只检查数据库。
 	Ready func() error
 }
@@ -95,7 +103,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
-	return s.logging(s.recoverPanics(mux))
+	return s.logging(s.recoverPanics(s.banGuard(mux)))
 }
 
 // ---------- 配对 ----------
@@ -109,7 +117,7 @@ type pairingSessionRequest struct {
 }
 
 func (s *Server) handlePairingSession(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.PairLimiter.Allow(clientIP(r)) {
+	if !s.cfg.PairLimiter.Allow(s.ipOf(r)) {
 		writeError(w, http.StatusTooManyRequests, "请求过于频繁")
 		return
 	}
@@ -172,7 +180,7 @@ type pairRequest struct {
 }
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
-	if !s.cfg.AttemptLimiter.Allow(clientIP(r)) {
+	if !s.cfg.AttemptLimiter.Allow(s.ipOf(r)) {
 		writeError(w, http.StatusTooManyRequests, "请求过于频繁")
 		return
 	}
@@ -437,7 +445,13 @@ func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	_, _ = io.WriteString(w, "ready\n")
 }
 
-func (s *Server) handleMetrics(w http.ResponseWriter, _ *http.Request) {
+func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
+	// 常量时间比较,防时序侧信道猜 token。
+	if s.cfg.MetricsToken != "" &&
+		subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(s.cfg.MetricsToken)) != 1 {
+		writeError(w, http.StatusUnauthorized, "未授权")
+		return
+	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
 	_, _ = io.WriteString(w, s.cfg.Metrics.Render())
 }
@@ -502,6 +516,38 @@ func (w *statusWriter) Flush() {
 	}
 }
 
+// banGuard fail2ban 式 IP 封禁:失败累积达阈值的 IP 全端点 403(不泄露原因)。
+// 健康与指标端点不计失败(监控探测不得引发封禁);环回地址整体豁免
+// (容器 HEALTHCHECK 直连 127.0.0.1,绝不能被自己打死)。
+func (s *Server) banGuard(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if !s.cfg.Bans.Enabled() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		ip := s.ipOf(r)
+		if pip := net.ParseIP(ip); pip != nil && pip.IsLoopback() {
+			next.ServeHTTP(w, r)
+			return
+		}
+		key := ratelimit.AggregateKey(ip)
+		if s.cfg.Bans.Banned(key) {
+			s.log.Debug("已封禁 IP 被拒", "ip", ip, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, "请求被拒绝")
+			return
+		}
+		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
+		next.ServeHTTP(sw, r)
+		switch r.URL.Path {
+		case "/healthz", "/readyz", "/metrics":
+			return
+		}
+		if sw.status >= 400 {
+			s.cfg.Bans.RecordFailure(key)
+		}
+	})
+}
+
 func (s *Server) logging(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		start := s.now()
@@ -510,7 +556,7 @@ func (s *Server) logging(next http.Handler) http.Handler {
 		// 只记录元数据，绝不记录请求体（其中可能含配对码）。
 		s.log.Debug("http",
 			"method", r.Method, "path", r.URL.Path, "status", sw.status,
-			"remote", clientIP(r), "duration", s.now().Sub(start).String())
+			"remote", s.ipOf(r), "duration", s.now().Sub(start).String())
 	})
 }
 
@@ -555,21 +601,31 @@ func (s *Server) internal(w http.ResponseWriter, msg string, err error) {
 	writeError(w, http.StatusInternalServerError, msg)
 }
 
-// clientIP 优先使用反向代理写入的 X-Forwarded-For。
+// realIP 从 RemoteAddr 与 X-Forwarded-For 推断客户端真实 IP(纯函数,表驱动测试)。
 //
-// relay 只应通过 Caddy 暴露；若直接公网监听，必须去掉对 XFF 的信任。
-func clientIP(r *http.Request) string {
-	if xff := r.Header.Get("X-Forwarded-For"); xff != "" {
-		if i := strings.IndexByte(xff, ','); i >= 0 {
-			return strings.TrimSpace(xff[:i])
-		}
-		return strings.TrimSpace(xff)
+// XFF 左侧可被客户端任意伪造;可信反代数为 trusted 时取右数第 trusted 项
+// (最右项由最外层可信代理追加)。仅当 RemoteAddr 是私网/环回——即流量确实
+// 经过我们的反代——才采信 XFF;直连公网一律用 RemoteAddr。
+func realIP(remoteHost, xff string, trusted int) string {
+	ip := net.ParseIP(remoteHost)
+	if ip == nil || trusted <= 0 || xff == "" || (!ip.IsPrivate() && !ip.IsLoopback()) {
+		return remoteHost
 	}
-	host, _, err := net.SplitHostPort(r.RemoteAddr)
-	if err != nil {
-		return r.RemoteAddr
+	parts := strings.Split(xff, ",")
+	idx := max(len(parts)-trusted, 0)
+	if cand := strings.TrimSpace(parts[idx]); cand != "" && net.ParseIP(cand) != nil {
+		return cand
 	}
-	return host
+	return remoteHost
+}
+
+// ipOf 是 realIP 的请求封装,限流/封禁/日志统一取址入口。
+func (s *Server) ipOf(r *http.Request) string {
+	host := r.RemoteAddr
+	if h, _, err := net.SplitHostPort(r.RemoteAddr); err == nil {
+		host = h
+	}
+	return realIP(host, r.Header.Get("X-Forwarded-For"), s.cfg.TrustedProxyCount)
 }
 
 func validCode(code string) bool {

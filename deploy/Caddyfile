@@ -2,6 +2,9 @@
 {$DOMAIN} {
 	encode zstd gzip
 
+	# /metrics 只限容器内网直连(HEALTHCHECK/抓取),公网边缘一律 404 兜底。
+	respond /metrics 404
+
 	# WebSocket 需要即时转发，绝不能缓冲。
 	reverse_proxy relay:8080 {
 		flush_interval -1

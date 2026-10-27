@@ -27,6 +27,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/deliver"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/quota"
+	"github.com/twotwoba/DevPilot-APNS/internal/ratelimit"
 	"github.com/twotwoba/DevPilot-APNS/internal/server"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
@@ -152,6 +153,18 @@ func runServe(args []string) int {
 		Quota:    eng,
 		Now:      now,
 	})
+	// 防滥用:fail2ban 式封禁(BAN_ENABLED=false 或阈值为 0 关闭)+ 配对限流。
+	var bans *ratelimit.BanManager
+	if cfg.BanEnabled {
+		bans = ratelimit.NewBanManager(ratelimit.BanConfig{
+			Threshold: cfg.BanThreshold,
+			Window:    time.Duration(cfg.BanWindowSeconds) * time.Second,
+			TTL:       time.Duration(cfg.BanTTLSeconds) * time.Second,
+			Now:       now,
+		})
+	}
+	m.BansActive = bans.Active
+
 	ready := func() error {
 		if apnsOK == nil {
 			return nil
@@ -161,6 +174,11 @@ func runServe(args []string) int {
 	srv, err := server.New(server.Config{
 		Store: st, Hub: hub, Metrics: m, Logger: logger,
 		PublicBaseURL: cfg.PublicBaseURL, Now: now, Ready: ready,
+		PairLimiter:    ratelimit.New(cfg.PairSessionLimit, time.Minute, now),
+		AttemptLimiter: ratelimit.New(cfg.PairAttemptLimit, time.Minute, now),
+		Bans:              bans,
+		TrustedProxyCount: cfg.TrustedProxyCount,
+		MetricsToken:      cfg.MetricsToken,
 	})
 	if err != nil {
 		logger.Error("初始化 server 失败", "err", err)

@@ -19,6 +19,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/pairing"
 	"github.com/twotwoba/DevPilot-APNS/internal/quota"
+	"github.com/twotwoba/DevPilot-APNS/internal/ratelimit"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
 	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
@@ -46,10 +47,22 @@ func newTestEnv(t *testing.T) *testEnv {
 }
 
 func newTestEnvWithNotifier(t *testing.T, notifier wss.Notifier) *testEnv {
-	return newTestEnvFull(t, notifier, nil)
+	return newTestEnvOpts(t, testEnvOpts{Notifier: notifier})
 }
 
 func newTestEnvFull(t *testing.T, notifier wss.Notifier, q *quota.Engine) *testEnv {
+	return newTestEnvOpts(t, testEnvOpts{Notifier: notifier, Quota: q})
+}
+
+type testEnvOpts struct {
+	Notifier          wss.Notifier
+	Quota             *quota.Engine
+	Bans              *ratelimit.BanManager
+	TrustedProxyCount int
+	MetricsToken      string
+}
+
+func newTestEnvOpts(t *testing.T, o testEnvOpts) *testEnv {
 	t.Helper()
 	st, err := store.Open(filepath.Join(t.TempDir(), "relay.db"))
 	if err != nil {
@@ -57,8 +70,11 @@ func newTestEnvFull(t *testing.T, notifier wss.Notifier, q *quota.Engine) *testE
 	}
 	t.Cleanup(func() { _ = st.Close() })
 	m := metrics.New()
-	hub := wss.New(wss.Config{Store: st, Metrics: m, Notifier: notifier, Quota: q})
-	srv, err := New(Config{Store: st, Hub: hub, Metrics: m})
+	hub := wss.New(wss.Config{Store: st, Metrics: m, Notifier: o.Notifier, Quota: o.Quota})
+	srv, err := New(Config{
+		Store: st, Hub: hub, Metrics: m,
+		Bans: o.Bans, TrustedProxyCount: o.TrustedProxyCount, MetricsToken: o.MetricsToken,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -642,5 +658,108 @@ func TestDeleteDaemonRevokesAll(t *testing.T) {
 	}
 	if wsResp == nil || wsResp.StatusCode != http.StatusUnauthorized {
 		t.Fatalf("吊销后 WS 应 401: %+v", wsResp)
+	}
+}
+
+// doXFF 带可选 Bearer 与 X-Forwarded-For 的通用请求(限流/封禁测试用)。
+func (e *testEnv) doXFF(t *testing.T, method, path string, body any, token, xff string) (*http.Response, []byte) {
+	t.Helper()
+	var rd io.Reader
+	if body != nil {
+		data, err := json.Marshal(body)
+		if err != nil {
+			t.Fatal(err)
+		}
+		rd = bytes.NewReader(data)
+	}
+	req, err := http.NewRequest(method, e.ts.URL+path, rd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
+	if xff != "" {
+		req.Header.Set("X-Forwarded-For", xff)
+	}
+	resp, err := e.client.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	out, _ := io.ReadAll(resp.Body)
+	return resp, out
+}
+
+func TestRealIP(t *testing.T) {
+	cases := []struct {
+		name    string
+		remote  string
+		xff     string
+		trusted int
+		want    string
+	}{
+		{"直连公网忽略 XFF", "203.0.113.9", "1.2.3.4", 1, "203.0.113.9"},
+		{"未配置信任数忽略 XFF", "10.0.0.2", "1.2.3.4", 0, "10.0.0.2"},
+		{"单级反代取最右", "127.0.0.1", "1.2.3.4", 1, "1.2.3.4"},
+		{"伪造的左侧被忽略", "127.0.0.1", "6.6.6.6, 1.2.3.4", 1, "1.2.3.4"},
+		{"两级可信链取右数第二", "127.0.0.1", "5.5.5.5, 1.2.3.4, 10.0.0.9", 2, "1.2.3.4"},
+		{"XFF 垃圾值回退", "127.0.0.1", "garbage", 1, "127.0.0.1"},
+		{"无端口 RemoteAddr 原样", "203.0.113.9", "", 0, "203.0.113.9"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			if got := realIP(c.remote, c.xff, c.trusted); got != c.want {
+				t.Fatalf("realIP(%q,%q,%d) = %q, want %q", c.remote, c.xff, c.trusted, got, c.want)
+			}
+		})
+	}
+}
+
+// TestBanMiddleware fail2ban 闭环:失败累计→封禁→403;环回豁免;他人不受牵连。
+func TestBanMiddleware(t *testing.T) {
+	bans := ratelimit.NewBanManager(ratelimit.BanConfig{Threshold: 3, Window: time.Minute, TTL: time.Hour})
+	env := newTestEnvOpts(t, testEnvOpts{Bans: bans, TrustedProxyCount: 1})
+
+	// 以 XFF 标记客户端 203.0.113.7,连打 3 次非法配对(400 计失败)。
+	for range 3 {
+		resp, _ := env.doXFF(t, http.MethodPost, "/v1/pairing/sessions",
+			map[string]any{"code": "BAD"}, "", "203.0.113.7")
+		if resp.StatusCode != http.StatusBadRequest {
+			t.Fatalf("非法配对应 400: %d", resp.StatusCode)
+		}
+	}
+	// 已封禁:任何端点 403(封禁检查在失败豁免之前)。
+	resp, _ := env.doXFF(t, http.MethodGet, "/healthz", nil, "", "203.0.113.7")
+	if resp.StatusCode != http.StatusForbidden {
+		t.Fatalf("封禁后应 403: %d", resp.StatusCode)
+	}
+	if bans.Active() != 1 {
+		t.Fatalf("Active = %d", bans.Active())
+	}
+	// 环回直连豁免(容器 HEALTHCHECK 形态)。
+	resp, _ = env.doXFF(t, http.MethodGet, "/healthz", nil, "", "")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("环回应豁免: %d", resp.StatusCode)
+	}
+	// 其他 IP 不受牵连。
+	resp, _ = env.doXFF(t, http.MethodGet, "/healthz", nil, "", "198.51.100.5")
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("未封禁 IP 不应受牵连: %d", resp.StatusCode)
+	}
+}
+
+func TestMetricsToken(t *testing.T) {
+	env := newTestEnvOpts(t, testEnvOpts{MetricsToken: "s3cret"})
+	resp, _ := env.doXFF(t, http.MethodGet, "/metrics", nil, "", "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("无 token 应 401: %d", resp.StatusCode)
+	}
+	resp, body := env.doXFF(t, http.MethodGet, "/metrics", nil, "s3cret", "")
+	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "devpilot_events_total") {
+		t.Fatalf("对 token 应 200: %d %s", resp.StatusCode, body)
 	}
 }
