@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	bolt "go.etcd.io/bbolt"
@@ -20,7 +21,10 @@ import (
 )
 
 // SchemaVersion 是 bbolt 数据布局版本。
-const SchemaVersion = 1
+//
+// v2(2026-10):Daemon 增 Tier(配额档位)与 LastSeenAt(TTL 清理依据),
+// 无新 bucket;旧 JSON 字段向后兼容。
+const SchemaVersion = 2
 
 // 容量与 TTL（与 pkg/wire 的超时常量保持同一量级）。
 const (
@@ -58,6 +62,33 @@ type Daemon struct {
 	CredHash  string `json:"cred_hash"`
 	CreatedAt int64  `json:"created_at"`
 	LastSeq   int64  `json:"last_seq"`
+	// Tier 是配额档位,App 配对时提交(v1 阶段客户端自声明,收据验证属后续硬化)。
+	Tier Tier `json:"tier,omitempty"`
+	// LastSeenAt 是 daemon 侧最近活跃时刻(WSS 建连/登记配对会话时刷新),TTL 清理依据。
+	LastSeenAt int64 `json:"last_seen_at,omitempty"`
+}
+
+// Tier 是 daemon 的配额档位。
+type Tier string
+
+const (
+	TierFree Tier = "free"
+	TierPro  Tier = "pro"
+)
+
+// Valid 报告档位值是否合法。
+func (t Tier) Valid() bool { return t == TierFree || t == TierPro }
+
+// ParseTier 解析客户端提交的档位;空值视为 free,未识别值返回 ok=false(调用方应 400)。
+func ParseTier(s string) (Tier, bool) {
+	switch strings.TrimSpace(strings.ToLower(s)) {
+	case "", string(TierFree):
+		return TierFree, true
+	case string(TierPro):
+		return TierPro, true
+	default:
+		return "", false
+	}
 }
 
 // PairingSession 是待 App 兑换的配对码。
@@ -130,7 +161,21 @@ func Open(path string) (*Store, error) {
 			}
 		}
 		meta := tx.Bucket(bucketMeta)
-		if meta.Get([]byte("schema_version")) == nil {
+		if raw := meta.Get([]byte("schema_version")); raw == nil {
+			// 新库:直接落当前版本。
+			var buf [8]byte
+			binary.BigEndian.PutUint64(buf[:], SchemaVersion)
+			if err := meta.Put([]byte("schema_version"), buf[:]); err != nil {
+				return err
+			}
+		} else if v := binary.BigEndian.Uint64(raw); v < SchemaVersion {
+			// 旧库:逐级迁移后改版本号。v0.1.0 二进制只判「版本键存在」不校验值,
+			// 因此 v2 库可被旧版直接打开(新增 JSON 字段被忽略),二进制回滚不锁库。
+			if v < 2 {
+				if err := migrateV1ToV2(tx); err != nil {
+					return err
+				}
+			}
 			var buf [8]byte
 			binary.BigEndian.PutUint64(buf[:], SchemaVersion)
 			if err := meta.Put([]byte("schema_version"), buf[:]); err != nil {
@@ -143,6 +188,33 @@ func Open(path string) (*Store, error) {
 		return nil, fmt.Errorf("store: 初始化失败: %w", err)
 	}
 	return s, nil
+}
+
+// migrateV1ToV2 为存量 Daemon 补 Tier 与 LastSeenAt。
+//
+// LastSeenAt 必须回填 CreatedAt:不回填则升级当天全部 daemon 的活跃时刻为 0,
+// 会被 TTL 清理误判「长期不活跃」而整档删除。
+func migrateV1ToV2(tx *bolt.Tx) error {
+	daemons := tx.Bucket(bucketDaemons)
+	return daemons.ForEach(func(k, v []byte) error {
+		var d Daemon
+		if err := json.Unmarshal(v, &d); err != nil {
+			return err
+		}
+		changed := false
+		if d.Tier == "" {
+			d.Tier = TierFree
+			changed = true
+		}
+		if d.LastSeenAt == 0 {
+			d.LastSeenAt = d.CreatedAt
+			changed = true
+		}
+		if changed {
+			return putJSON(daemons, string(k), d)
+		}
+		return nil
+	})
 }
 
 // Close 关闭数据库。
@@ -195,10 +267,12 @@ func (s *Store) RegisterPairingSession(ps PairingSession) error {
 		daemons := tx.Bucket(bucketDaemons)
 		existing := daemons.Get([]byte(ps.DaemonID))
 		rec := Daemon{
-			ID:        ps.DaemonID,
-			Name:      ps.DaemonName,
-			CredHash:  ps.CredHash,
-			CreatedAt: ps.CreatedAt,
+			ID:         ps.DaemonID,
+			Name:       ps.DaemonName,
+			CredHash:   ps.CredHash,
+			CreatedAt:  ps.CreatedAt,
+			Tier:       TierFree,
+			LastSeenAt: ps.CreatedAt,
 		}
 		if existing != nil {
 			if err := json.Unmarshal(existing, &rec); err != nil {
@@ -206,6 +280,8 @@ func (s *Store) RegisterPairingSession(ps PairingSession) error {
 			}
 			rec.Name = ps.DaemonName
 			rec.CredHash = ps.CredHash
+			// 轮换凭据即 daemon 侧活跃,顺带续 TTL。
+			rec.LastSeenAt = ps.CreatedAt
 		}
 		if err := putJSON(daemons, ps.DaemonID, rec); err != nil {
 			return err
@@ -234,8 +310,9 @@ func (s *Store) VerifyDaemon(id, secret string) (Daemon, bool) {
 
 // Pair 用配对码兑换 device 凭据；配对码一次性焚毁。
 //
+// 同时把 App 提交的档位写入 daemon（配额分层的事实源）；
 // 同一 daemon 只保留一台 device（重新配对会顶掉旧设备）。
-func (s *Store) Pair(codeHash string, device Device, now int64) (Daemon, Device, error) {
+func (s *Store) Pair(codeHash string, device Device, tier Tier, now int64) (Daemon, Device, error) {
 	var daemon Daemon
 	err := s.db.Update(func(tx *bolt.Tx) error {
 		codes := tx.Bucket(bucketCodes)
@@ -253,6 +330,13 @@ func (s *Store) Pair(codeHash string, device Device, now int64) (Daemon, Device,
 		}
 		if err := getJSON(tx.Bucket(bucketDaemons), ps.DaemonID, &daemon); err != nil {
 			return ErrCodeInvalid
+		}
+		if !tier.Valid() {
+			tier = TierFree
+		}
+		daemon.Tier = tier
+		if err := putJSON(tx.Bucket(bucketDaemons), ps.DaemonID, daemon); err != nil {
+			return err
 		}
 		devices := tx.Bucket(bucketDevices)
 		var stale [][]byte
@@ -329,6 +413,31 @@ func (s *Store) ClearDeviceAPNSToken(id string) error {
 	})
 }
 
+// TouchDaemon 更新 daemon 的 last_seen_at(WSS 建连等 daemon 侧活跃时调用)。
+func (s *Store) TouchDaemon(id string, now int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		var d Daemon
+		if err := getJSON(tx.Bucket(bucketDaemons), id, &d); err != nil {
+			return err
+		}
+		d.LastSeenAt = now
+		return putJSON(tx.Bucket(bucketDaemons), id, d)
+	})
+}
+
+// UpdateDeviceAPNSToken 覆写设备的 APNs token(App 重新上报/410 后补报)。
+func (s *Store) UpdateDeviceAPNSToken(id, token string, now int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		var d Device
+		if err := getJSON(tx.Bucket(bucketDevices), id, &d); err != nil {
+			return err
+		}
+		d.APNSToken = token
+		d.LastSeenAt = now
+		return putJSON(tx.Bucket(bucketDevices), id, d)
+	})
+}
+
 // DevicesForDaemon 返回一台 daemon 绑定的所有设备。
 func (s *Store) DevicesForDaemon(daemonID string) ([]Device, error) {
 	var out []Device
@@ -345,6 +454,94 @@ func (s *Store) DevicesForDaemon(daemonID string) ([]Device, error) {
 		})
 	})
 	return out, err
+}
+
+// DeleteDevice 删除一台设备及其全部 LA token(设备自助解绑)。
+func (s *Store) DeleteDevice(id string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return deleteDeviceTx(tx, id)
+	})
+}
+
+// DeleteDaemonCascade 吊销一台 daemon 及其全部从属数据
+// (devices/la_tokens/inbox/event_ids/pending),unpair 与 TTL 清理共用。
+func (s *Store) DeleteDaemonCascade(daemonID string) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		return deleteDaemonTx(tx, daemonID)
+	})
+}
+
+func deleteDeviceTx(tx *bolt.Tx, deviceID string) error {
+	if err := deletePrefix(tx.Bucket(bucketLATokens), []byte(deviceID+"/")); err != nil {
+		return err
+	}
+	return tx.Bucket(bucketDevices).Delete([]byte(deviceID))
+}
+
+func deleteDaemonTx(tx *bolt.Tx, daemonID string) error {
+	if err := tx.Bucket(bucketDaemons).Delete([]byte(daemonID)); err != nil {
+		return err
+	}
+	// 收件箱与事件去重表按 daemonID 前缀存储,前缀扫删。
+	if err := deletePrefix(tx.Bucket(bucketInbox), []byte(daemonID+"/")); err != nil {
+		return err
+	}
+	if err := deletePrefix(tx.Bucket(bucketEventIDs), []byte(daemonID+"/")); err != nil {
+		return err
+	}
+	// devices / la_tokens / pending 按 DaemonID 字段清扫。
+	var devKeys, laKeys, pendingKeys [][]byte
+	if err := tx.Bucket(bucketDevices).ForEach(func(k, v []byte) error {
+		var d Device
+		if err := json.Unmarshal(v, &d); err != nil {
+			return err
+		}
+		if d.DaemonID == daemonID {
+			devKeys = append(devKeys, bytes.Clone(k))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := tx.Bucket(bucketLATokens).ForEach(func(k, v []byte) error {
+		var t LAToken
+		if err := json.Unmarshal(v, &t); err != nil {
+			return err
+		}
+		if t.DaemonID == daemonID {
+			laKeys = append(laKeys, bytes.Clone(k))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	if err := tx.Bucket(bucketPending).ForEach(func(k, v []byte) error {
+		var p Pending
+		if err := json.Unmarshal(v, &p); err != nil {
+			return err
+		}
+		if p.DaemonID == daemonID {
+			pendingKeys = append(pendingKeys, bytes.Clone(k))
+		}
+		return nil
+	}); err != nil {
+		return err
+	}
+	for _, target := range []struct {
+		bucket *bolt.Bucket
+		keys   [][]byte
+	}{
+		{tx.Bucket(bucketDevices), devKeys},
+		{tx.Bucket(bucketLATokens), laKeys},
+		{tx.Bucket(bucketPending), pendingKeys},
+	} {
+		for _, k := range target.keys {
+			if err := target.bucket.Delete(k); err != nil {
+				return err
+			}
+		}
+	}
+	return nil
 }
 
 // ---------- 收件箱 ----------
@@ -740,6 +937,62 @@ func cleanupLATokens(tx *bolt.Tx, now int64) error {
 	return nil
 }
 
+// CleanupIdentities 清理超期未活跃的 daemon(级联)与 device(含 LA token),
+// 托管模式的生命周期回收;TTL 为 0 表示对应维度禁用。返回清理数量供日志。
+func (s *Store) CleanupIdentities(now int64, daemonTTL, deviceTTL time.Duration) (removedDaemons, removedDevices int, err error) {
+	if daemonTTL <= 0 && deviceTTL <= 0 {
+		return 0, 0, nil
+	}
+	err = s.db.Update(func(tx *bolt.Tx) error {
+		if deviceTTL > 0 {
+			devices := tx.Bucket(bucketDevices)
+			var stale []string
+			if scanErr := devices.ForEach(func(k, v []byte) error {
+				var d Device
+				if json.Unmarshal(v, &d) != nil {
+					return nil // 坏行不阻断清理
+				}
+				if d.LastSeenAt > 0 && now-d.LastSeenAt > int64(deviceTTL.Seconds()) {
+					stale = append(stale, string(k))
+				}
+				return nil
+			}); scanErr != nil {
+				return scanErr
+			}
+			for _, id := range stale {
+				if delErr := deleteDeviceTx(tx, id); delErr != nil {
+					return delErr
+				}
+				removedDevices++
+			}
+		}
+		if daemonTTL > 0 {
+			daemons := tx.Bucket(bucketDaemons)
+			var stale []string
+			if scanErr := daemons.ForEach(func(k, v []byte) error {
+				var d Daemon
+				if json.Unmarshal(v, &d) != nil {
+					return nil // 坏行不阻断清理
+				}
+				if d.LastSeenAt > 0 && now-d.LastSeenAt > int64(daemonTTL.Seconds()) {
+					stale = append(stale, string(k))
+				}
+				return nil
+			}); scanErr != nil {
+				return scanErr
+			}
+			for _, id := range stale {
+				if delErr := deleteDaemonTx(tx, id); delErr != nil {
+					return delErr
+				}
+				removedDaemons++
+			}
+		}
+		return nil
+	})
+	return removedDaemons, removedDevices, err
+}
+
 // trimInbox 在写入后维持每 daemon 的条数上限。
 func trimInbox(tx *bolt.Tx, daemonID string) error {
 	inbox := tx.Bucket(bucketInbox)
@@ -774,7 +1027,7 @@ type eventIDRecord struct {
 }
 
 func inboxKey(daemonID string, seq int64) []byte {
-	return []byte(fmt.Sprintf("%s/%020d", daemonID, seq))
+	return fmt.Appendf(nil, "%s/%020d", daemonID, seq)
 }
 
 func eventIDKey(daemonID, eventID string) []byte {
@@ -783,6 +1036,22 @@ func eventIDKey(daemonID, eventID string) []byte {
 
 func laKey(deviceID, sessionID string) []byte {
 	return []byte(deviceID + "/" + sessionID)
+}
+
+// deletePrefix 删除 bucket 中带前缀的全部 key
+// (bbolt 游标序即字典序;先收集再删,避免删除时移动游标)。
+func deletePrefix(b *bolt.Bucket, prefix []byte) error {
+	c := b.Cursor()
+	var keys [][]byte
+	for k, _ := c.Seek(prefix); k != nil && bytes.HasPrefix(k, prefix); k, _ = c.Next() {
+		keys = append(keys, bytes.Clone(k))
+	}
+	for _, k := range keys {
+		if err := b.Delete(k); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 // statusForDecision 把线上决策值映射为内部审批状态。

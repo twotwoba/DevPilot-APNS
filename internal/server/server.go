@@ -165,6 +165,7 @@ type pairRequest struct {
 	Code       string `json:"code"`
 	APNSToken  string `json:"apns_token"`
 	DeviceName string `json:"device_name"`
+	Tier       string `json:"tier"`
 }
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
@@ -178,6 +179,12 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validCode(canonicalCode(req.Code)) {
 		writeError(w, http.StatusBadRequest, "配对码格式不合法")
+		return
+	}
+	// 档位由 App 配对时提交(空=free;非法值拒绝,防拼写错误静默降档)。
+	tier, ok := store.ParseTier(req.Tier)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "档位不合法(空或 free|pro)")
 		return
 	}
 	now := s.now().Unix()
@@ -197,7 +204,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		APNSToken: strings.TrimSpace(req.APNSToken),
 		Name:      name,
 	}
-	daemon, _, err := s.cfg.Store.Pair(pairing.CodeHash(canonicalCode(req.Code)), device, now)
+	daemon, _, err := s.cfg.Store.Pair(pairing.CodeHash(canonicalCode(req.Code)), device, tier, now)
 	switch {
 	case errors.Is(err, store.ErrCodeExpired):
 		writeError(w, http.StatusGone, "配对码已过期")
@@ -209,7 +216,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "配对失败", err)
 		return
 	}
-	s.log.Info("设备配对成功", "daemon_id", daemon.ID, "device_id", deviceID, "device_name", name)
+	s.log.Info("设备配对成功", "daemon_id", daemon.ID, "device_id", deviceID, "device_name", name, "tier", tier)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"device_id":         deviceID,
 		"device_credential": pairing.DeviceCredential(deviceID, secret),
