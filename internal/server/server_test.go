@@ -751,6 +751,78 @@ func TestDeleteDaemonKicksLiveConns(t *testing.T) {
 	recvClosed(t, app)
 }
 
+// TestDeviceTokenUpdatesTier token 端点顺带刷新 daemon 档位:升级/降级
+// 落库并踢 daemon 连接(重连后配额按新档生效);缺 tier 字段旧版兼容不动档;
+// 非法档 400 且不落库。
+func TestDeviceTokenUpdatesTier(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_t1",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+
+	resp, body := env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok-1", "tier": "pro",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("升级 HTTP %d: %s", resp.StatusCode, body)
+	}
+	d, err := env.store.Daemon(testDaemonID)
+	if err != nil || d.Tier != store.TierPro {
+		t.Fatalf("档位未升级: %+v err=%v", d, err)
+	}
+	// 配额按建连时缓存的 tier 结算,改档必须踢连接促重连。
+	recvClosed(t, daemon)
+
+	// 降级对称可逆。
+	daemon = dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_t2",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok-2", "tier": "free",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("降级 HTTP %d", resp.StatusCode)
+	}
+	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
+		t.Fatalf("档位未降级: %+v err=%v", d, err)
+	}
+	recvClosed(t, daemon)
+
+	// 非法档 400 且不落库、不踢连接;缺 tier 字段照常 204。
+	daemon = dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_t3",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok-3", "tier": "vip",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("非法档应 400: %d", resp.StatusCode)
+	}
+	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
+		t.Fatalf("非法档不应落库: %+v err=%v", d, err)
+	}
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": "tok-4"}, env.deviceCr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("无 tier 字段应 204: %d", resp.StatusCode)
+	}
+	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
+		t.Fatalf("无 tier 字段不应动档: %+v err=%v", d, err)
+	}
+	// 连接未被踢(合法性校验失败不该殃及在线会话):Ping 应有 Pong 应答。
+	send(t, daemon, wire.Ping{V: wire.Version, Kind: wire.KindPing, TS: time.Now().Unix()})
+	if _, ok := recv(t, daemon).(*wire.Pong); !ok {
+		t.Fatal("无 tier 上报不应断开连接")
+	}
+}
+
 // doXFF 带可选 Bearer 与 X-Forwarded-For 的通用请求(限流/封禁测试用)。
 func (e *testEnv) doXFF(t *testing.T, method, path string, body any, token, xff string) (*http.Response, []byte) {
 	t.Helper()

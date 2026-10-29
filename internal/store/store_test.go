@@ -362,6 +362,26 @@ func TestPairWritesTierAndTouchDaemon(t *testing.T) {
 	}
 }
 
+// TestSetDaemonTier 权益翻转改档:落盘且顺带刷新 last_seen。
+func TestSetDaemonTier(t *testing.T) {
+	s := newStore(t)
+	code := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"
+	seedPairing(t, s, code, "dd_0123456789abcdef0123456789abcdef")
+	daemon, _ := pairDeviceTier(t, s, code, TierFree)
+
+	if err := s.SetDaemonTier(daemon.ID, TierPro, testNow+200); err != nil {
+		t.Fatal(err)
+	}
+	d, err := s.Daemon(daemon.ID)
+	if err != nil || d.Tier != TierPro || d.LastSeenAt != testNow+200 {
+		t.Fatalf("改档未落盘: %+v err=%v", d, err)
+	}
+	// 不存在的 daemon 报 NotFound,不静默。
+	if err := s.SetDaemonTier("dd_ff", TierFree, testNow); err != ErrNotFound {
+		t.Fatalf("未知 daemon 应 NotFound: %v", err)
+	}
+}
+
 func TestUpdateDeviceAPNSToken(t *testing.T) {
 	s := newStore(t)
 	code := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

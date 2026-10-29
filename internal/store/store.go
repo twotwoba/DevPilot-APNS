@@ -427,6 +427,20 @@ func (s *Store) TouchDaemon(id string, now int64) error {
 	})
 }
 
+// SetDaemonTier 覆写 daemon 档位(App 权益翻转后经 token 端点上报)。
+// 配额按 Conn.Tier 结算、建连时缓存，改档后由 server 踢连接促重连生效。
+func (s *Store) SetDaemonTier(id string, tier Tier, now int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		var d Daemon
+		if err := getJSON(tx.Bucket(bucketDaemons), id, &d); err != nil {
+			return err
+		}
+		d.Tier = tier
+		d.LastSeenAt = now
+		return putJSON(tx.Bucket(bucketDaemons), id, d)
+	})
+}
+
 // UpdateDeviceAPNSToken 覆写设备的 APNs token(App 重新上报/410 后补报)。
 func (s *Store) UpdateDeviceAPNSToken(id, token string, now int64) error {
 	return s.db.Update(func(tx *bolt.Tx) error {

@@ -367,6 +367,8 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 
 type deviceTokenRequest struct {
 	APNSToken string `json:"apns_token"`
+	// Tier 可选:App 权益翻转时同步档位;留空不触碰(旧版 App 兼容)。
+	Tier string `json:"tier,omitempty"`
 }
 
 // handleDeviceToken App 重新上报 APNs token(410 剪枝后、重装、换机)。
@@ -385,9 +387,29 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "apns_token 不合法")
 		return
 	}
+	// 档位刷新:订阅到期降 free / 续费升 pro,配额随之收敛,不需要重新扫码。
+	// 先校验再写库(避免 token 已改、tier 非法时的半提交);改档后踢 daemon
+	// 连接——quota 按 Conn.Tier 结算、建连时缓存,daemon 秒级退避重连后
+	// 即刻按新档生效。
+	var tier store.Tier
+	if req.Tier != "" {
+		var ok bool
+		if tier, ok = store.ParseTier(req.Tier); !ok {
+			writeError(w, http.StatusBadRequest, "tier 不合法")
+			return
+		}
+	}
 	if err := s.cfg.Store.UpdateDeviceAPNSToken(device.ID, token, s.now().Unix()); err != nil {
 		s.internal(w, "更新 APNs token 失败", err)
 		return
+	}
+	if req.Tier != "" {
+		if err := s.cfg.Store.SetDaemonTier(device.DaemonID, tier, s.now().Unix()); err != nil {
+			s.internal(w, "更新档位失败", err)
+			return
+		}
+		s.cfg.Hub.KickDaemon(device.DaemonID)
+		s.log.Info("daemon 档位已更新", "daemon_id", device.DaemonID, "tier", tier)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
