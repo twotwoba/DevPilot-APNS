@@ -74,6 +74,37 @@ func New(cfg Config) *Hub {
 	}
 }
 
+// KickDevice 主动断开指定设备的在线连接（设备解绑后调用）：
+// 防止已注销 device 的僵尸连接继续收事件。close 幂等，Serve 的
+// ws.Read 立即出错退出，由其 defer unregister 完成摘除。
+func (h *Hub) KickDevice(deviceID string) {
+	h.mu.RLock()
+	c := h.apps[deviceID]
+	h.mu.RUnlock()
+	if c != nil {
+		c.close()
+	}
+}
+
+// KickDaemon 主动断开 daemon 自身及其名下全部设备的在线连接
+// （daemon 吊销级联删除后调用）。锁内只收集，close 在锁外执行。
+func (h *Hub) KickDaemon(daemonID string) {
+	h.mu.RLock()
+	targets := make([]*Conn, 0, 1)
+	if c := h.daemons[daemonID]; c != nil {
+		targets = append(targets, c)
+	}
+	for _, c := range h.apps {
+		if c.DaemonID == daemonID {
+			targets = append(targets, c)
+		}
+	}
+	h.mu.RUnlock()
+	for _, c := range targets {
+		c.close()
+	}
+}
+
 // Counts 返回在线连接数（指标用）。
 func (h *Hub) Counts() (daemons, apps int) {
 	h.mu.RLock()

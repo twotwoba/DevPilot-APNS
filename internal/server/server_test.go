@@ -661,6 +661,96 @@ func TestDeleteDaemonRevokesAll(t *testing.T) {
 	}
 }
 
+// recvClosed 断言连接已被服务端断开（读取出错，而非超时后仍能收到消息）。
+func recvClosed(t *testing.T, c *websocket.Conn) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if _, _, err := c.Read(ctx); err == nil {
+		t.Fatal("连接应已被服务端断开")
+	}
+}
+
+// TestDeleteDeviceKicksLiveConn 设备解绑后，其在线 WSS 连接应被立即断开，
+// 不残留还能收事件的僵尸连接。
+func TestDeleteDeviceKicksLiveConn(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	app := dial(t, env.ts, "/ws/app", env.deviceCr)
+	hello(t, app, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_kick",
+		Role: wire.RoleApp, DeviceID: env.deviceID, TS: time.Now().Unix(),
+	})
+
+	resp, body := env.doXFF(t, http.MethodDelete, "/v1/device", nil, env.deviceCr, "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("解绑 HTTP %d: %s", resp.StatusCode, body)
+	}
+	recvClosed(t, app)
+}
+
+// TestFanOutSkipsZombieConn 设备行已删但连接仍在的竞态窗口里（绕过
+// handler 直接删行模拟 kick 未触达），事件扇出必须跳过该连接并顺手
+// 断开，而不是继续向已注销设备投递。
+func TestFanOutSkipsZombieConn(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_zd",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+	app := dial(t, env.ts, "/ws/app", env.deviceCr)
+	hello(t, app, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_za",
+		Role: wire.RoleApp, DeviceID: env.deviceID, TS: time.Now().Unix(),
+	})
+
+	// 竞态窗口：store 里设备已删，但连接注册表尚未摘除。
+	if err := env.store.DeleteDevice(env.deviceID); err != nil {
+		t.Fatal(err)
+	}
+	send(t, daemon, wire.Envelope{
+		V: wire.Version, Kind: wire.KindEvent, MsgID: "m_evz", EventID: "ev_z",
+		ApprovalID: "apv_" + strings.Repeat("z", 26), Type: wire.EventApprovalRequired,
+		Agent: wire.AgentClaude, DaemonID: testDaemonID, SessionID: "sess_z",
+		TS: time.Now().Unix(),
+	})
+	ack, ok := recv(t, daemon).(*wire.Ack)
+	if !ok || ack.Status != wire.AckAccepted {
+		t.Fatalf("event ack = %+v", ack)
+	}
+	// App 侧：收不到事件，且连接被复核逻辑断开。
+	recvClosed(t, app)
+}
+
+// TestDeleteDaemonKicksLiveConns daemon 吊销后，其自身与名下设备的
+// 在线连接都应被立即断开。
+func TestDeleteDaemonKicksLiveConns(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_dd",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+	app := dial(t, env.ts, "/ws/app", env.deviceCr)
+	hello(t, app, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_da",
+		Role: wire.RoleApp, DeviceID: env.deviceID, TS: time.Now().Unix(),
+	})
+
+	resp, body := env.doXFF(t, http.MethodDelete, "/v1/daemon", nil, env.cred, "")
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("吊销 HTTP %d: %s", resp.StatusCode, body)
+	}
+	recvClosed(t, daemon)
+	recvClosed(t, app)
+}
+
 // doXFF 带可选 Bearer 与 X-Forwarded-For 的通用请求(限流/封禁测试用)。
 func (e *testEnv) doXFF(t *testing.T, method, path string, body any, token, xff string) (*http.Response, []byte) {
 	t.Helper()

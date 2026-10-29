@@ -403,6 +403,8 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "解绑设备失败", err)
 		return
 	}
+	// 踢掉该设备的在线连接：防止已注销 device 的僵尸连接继续收事件。
+	s.cfg.Hub.KickDevice(device.ID)
 	s.log.Info("设备已解绑", "device_id", device.ID, "daemon_id", device.DaemonID)
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -419,6 +421,8 @@ func (s *Server) handleDeleteDaemon(w http.ResponseWriter, r *http.Request) {
 		s.internal(w, "吊销 daemon 失败", err)
 		return
 	}
+	// 级联删除后凭据已失效，踢掉 daemon 及其名下设备的全部在线连接。
+	s.cfg.Hub.KickDaemon(daemon.ID)
 	s.log.Info("daemon 已吊销", "daemon_id", daemon.ID)
 	w.WriteHeader(http.StatusNoContent)
 }

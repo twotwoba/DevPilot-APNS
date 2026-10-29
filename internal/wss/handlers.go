@@ -190,7 +190,28 @@ func (h *Hub) sendToApps(daemonID string, env wire.Envelope) {
 		}
 	}
 	h.mu.RUnlock()
+	// 防御性复核：连接注册表只按 daemon_id 匹配，device 可能已被解绑
+	// 而连接尚未被 kick（解绑与扇出的竞态窗口、或旧版 server 未接 kick）。
+	// 现查 store 取存活设备集合；读库失败按仍在线投递（可用性优先，
+	// 僵尸连接由 KickDevice 主路径兜底）。
+	var live map[string]struct{}
+	if devices, err := h.cfg.Store.DevicesForDaemon(daemonID); err != nil {
+		h.log.Error("复核在线设备失败，按仍在线投递", "daemon_id", daemonID, "err", err)
+	} else {
+		live = make(map[string]struct{}, len(devices))
+		for _, d := range devices {
+			live[d.ID] = struct{}{}
+		}
+	}
 	for _, c := range targets {
+		if live != nil {
+			if _, ok := live[c.ID]; !ok {
+				// 设备已注销：不再投递，顺手断开这条僵尸连接。
+				h.log.Info("跳过已解绑设备并断开其连接", "device_id", c.ID, "event_id", env.EventID)
+				h.KickDevice(c.ID)
+				continue
+			}
+		}
 		if err := c.Send(env); err != nil {
 			h.log.Warn("推送事件给 App 失败", "device_id", c.ID, "event_id", env.EventID, "err", err)
 		}
