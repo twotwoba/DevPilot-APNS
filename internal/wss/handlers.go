@@ -19,7 +19,7 @@ func (h *Hub) onEvent(ctx context.Context, c *Conn, env *wire.Envelope) {
 	// daemon 收到 rejected 即终态丢弃（删 WAL），无重试风暴。
 	if h.cfg.Quota != nil && !h.cfg.Quota.AllowEvent(c.Tier, c.DaemonID, env.Type) {
 		h.cfg.Metrics.IncQuotaRejected("rate_event")
-		h.log.Warn("事件被速率闸拒绝", "daemon_id", c.DaemonID,
+		h.log.Warn("event rejected by rate limit", "daemon_id", c.DaemonID,
 			"event_id", env.EventID, "type", env.Type)
 		h.ack(c, env.MsgID, env.EventID, env.ApprovalID, wire.AckRejected)
 		return
@@ -27,7 +27,7 @@ func (h *Hub) onEvent(ctx context.Context, c *Conn, env *wire.Envelope) {
 	now := h.now().Unix()
 	stored, duplicate, err := h.cfg.Store.AppendInbox(c.DaemonID, *env, now)
 	if err != nil {
-		h.log.Error("写入收件箱失败", "event_id", env.EventID, "err", err)
+		h.log.Error("failed to append inbox", "event_id", env.EventID, "err", err)
 		h.ack(c, env.MsgID, env.EventID, env.ApprovalID, wire.AckRejected)
 		return
 	}
@@ -49,7 +49,7 @@ func (h *Hub) onEvent(ctx context.Context, c *Conn, env *wire.Envelope) {
 			ExpiresAt:  now + wire.PendingTTLSeconds,
 		}
 		if err := h.cfg.Store.PutPending(p); err != nil {
-			h.log.Error("登记待审批失败", "approval_id", stored.ApprovalID, "err", err)
+			h.log.Error("failed to record pending approval", "approval_id", stored.ApprovalID, "err", err)
 			h.ack(c, env.MsgID, env.EventID, env.ApprovalID, wire.AckRejected)
 			return
 		}
@@ -69,7 +69,7 @@ func (h *Hub) onDecision(c *Conn, d *wire.Decision) {
 	now := h.now().Unix()
 	status, p, err := h.cfg.Store.ApplyDecision(d.ApprovalID, c.DaemonID, string(d.Decision), now)
 	if err != nil {
-		h.log.Error("写入决策失败", "approval_id", d.ApprovalID, "err", err)
+		h.log.Error("failed to apply decision", "approval_id", d.ApprovalID, "err", err)
 		h.ack(c, d.MsgID, "", d.ApprovalID, wire.AckRejected)
 		return
 	}
@@ -90,7 +90,7 @@ func (h *Hub) onAck(c *Conn, a *wire.Ack) {
 		return
 	}
 	if err := h.cfg.Store.MarkDecisionDelivered(a.ApprovalID); err != nil {
-		h.log.Warn("标记决策已送达失败", "approval_id", a.ApprovalID, "err", err)
+		h.log.Warn("failed to mark decision delivered", "approval_id", a.ApprovalID, "err", err)
 	}
 }
 
@@ -102,7 +102,7 @@ func (h *Hub) onLAToken(c *Conn, l *wire.LAToken) {
 		status = wire.AckRejected
 	case l.Event == wire.LAEnd:
 		if err := h.cfg.Store.DeleteLAToken(c.ID, l.SessionID); err != nil {
-			h.log.Warn("删除 LA token 失败", "session_id", l.SessionID, "err", err)
+			h.log.Warn("failed to delete LA token", "session_id", l.SessionID, "err", err)
 			status = wire.AckRejected
 		}
 	default:
@@ -110,7 +110,7 @@ func (h *Hub) onLAToken(c *Conn, l *wire.LAToken) {
 			DeviceID: c.ID, DaemonID: l.DaemonID, SessionID: l.SessionID,
 			PushToken: l.PushToken, UpdatedAt: h.now().Unix(),
 		}); err != nil {
-			h.log.Warn("保存 LA token 失败", "session_id", l.SessionID, "err", err)
+			h.log.Warn("failed to save LA token", "session_id", l.SessionID, "err", err)
 			status = wire.AckRejected
 		}
 	}
@@ -126,12 +126,12 @@ func (h *Hub) sendResync(c *Conn, r wire.Resync) {
 	now := h.now().Unix()
 	pending, err := h.cfg.Store.PendingForDaemon(c.DaemonID, now)
 	if err != nil {
-		h.log.Error("读取待审批失败", "daemon_id", c.DaemonID, "err", err)
+		h.log.Error("failed to read pending approvals", "daemon_id", c.DaemonID, "err", err)
 	}
 	cursor, _ := strconv.ParseInt(r.Cursor, 10, 64)
 	events, next, err := h.cfg.Store.InboxSince(c.DaemonID, cursor, r.Since, resyncLimit)
 	if err != nil {
-		h.log.Error("读取收件箱失败", "daemon_id", c.DaemonID, "err", err)
+		h.log.Error("failed to read inbox", "daemon_id", c.DaemonID, "err", err)
 	}
 
 	result := wire.ResyncResult{
@@ -145,7 +145,7 @@ func (h *Hub) sendResync(c *Conn, r wire.Resync) {
 		result.NextCursor = strconv.FormatInt(next, 10)
 	}
 	if err := c.Send(result); err != nil {
-		h.log.Warn("发送 resync 结果失败", "device_id", c.ID, "err", err)
+		h.log.Warn("failed to send resync result", "device_id", c.ID, "err", err)
 	}
 }
 
@@ -153,7 +153,7 @@ func (h *Hub) sendResync(c *Conn, r wire.Resync) {
 func (h *Hub) replayDecisions(c *Conn) {
 	items, err := h.cfg.Store.UndeliveredDecisions(c.DaemonID, h.now().Unix())
 	if err != nil {
-		h.log.Error("读取未送达决策失败", "daemon_id", c.DaemonID, "err", err)
+		h.log.Error("failed to read undelivered decisions", "daemon_id", c.DaemonID, "err", err)
 		return
 	}
 	for _, p := range items {
@@ -161,7 +161,7 @@ func (h *Hub) replayDecisions(c *Conn) {
 			V: wire.Version, Kind: wire.KindDecision, MsgID: id.New(),
 			ApprovalID: p.ApprovalID, Decision: wire.DecisionKind(p.Decision), TS: h.now().Unix(),
 		}); err != nil {
-			h.log.Warn("补发决策失败", "approval_id", p.ApprovalID, "err", err)
+			h.log.Warn("failed to replay decision", "approval_id", p.ApprovalID, "err", err)
 			return
 		}
 	}
@@ -173,11 +173,11 @@ func (h *Hub) forwardDecision(daemonID string, d wire.Decision) {
 	h.mu.RUnlock()
 	if c == nil {
 		// daemon 离线：决策已落库，重连后由 replayDecisions 补发。
-		h.log.Info("daemon 离线，决策等待重连补发", "daemon_id", daemonID, "approval_id", d.ApprovalID)
+		h.log.Info("daemon offline; decision will replay on reconnect", "daemon_id", daemonID, "approval_id", d.ApprovalID)
 		return
 	}
 	if err := c.Send(d); err != nil {
-		h.log.Warn("转发决策失败", "daemon_id", daemonID, "approval_id", d.ApprovalID, "err", err)
+		h.log.Warn("failed to forward decision", "daemon_id", daemonID, "approval_id", d.ApprovalID, "err", err)
 	}
 }
 
@@ -196,7 +196,7 @@ func (h *Hub) sendToApps(daemonID string, env wire.Envelope) {
 	// 僵尸连接由 KickDevice 主路径兜底）。
 	var live map[string]struct{}
 	if devices, err := h.cfg.Store.DevicesForDaemon(daemonID); err != nil {
-		h.log.Error("复核在线设备失败，按仍在线投递", "daemon_id", daemonID, "err", err)
+		h.log.Error("failed to verify live devices, delivering anyway", "daemon_id", daemonID, "err", err)
 	} else {
 		live = make(map[string]struct{}, len(devices))
 		for _, d := range devices {
@@ -207,13 +207,13 @@ func (h *Hub) sendToApps(daemonID string, env wire.Envelope) {
 		if live != nil {
 			if _, ok := live[c.ID]; !ok {
 				// 设备已注销：不再投递，顺手断开这条僵尸连接。
-				h.log.Info("跳过已解绑设备并断开其连接", "device_id", c.ID, "event_id", env.EventID)
+				h.log.Info("skipping unbound device, closing its connection", "device_id", c.ID, "event_id", env.EventID)
 				h.KickDevice(c.ID)
 				continue
 			}
 		}
 		if err := c.Send(env); err != nil {
-			h.log.Warn("推送事件给 App 失败", "device_id", c.ID, "event_id", env.EventID, "err", err)
+			h.log.Warn("failed to push event to app", "device_id", c.ID, "event_id", env.EventID, "err", err)
 		}
 	}
 }
@@ -225,7 +225,7 @@ func (h *Hub) notify(ctx context.Context, env wire.Envelope) {
 	}
 	devices, err := h.cfg.Store.DevicesForDaemon(env.DaemonID)
 	if err != nil {
-		h.log.Error("读取设备列表失败", "daemon_id", env.DaemonID, "err", err)
+		h.log.Error("failed to list devices", "daemon_id", env.DaemonID, "err", err)
 		return
 	}
 	for _, d := range devices {
@@ -241,6 +241,6 @@ func (h *Hub) ack(c *Conn, ref, eventID, approvalID string, status wire.AckStatu
 		EventID: eventID, ApprovalID: approvalID, Status: status, TS: h.now().Unix(),
 	}
 	if err := c.Send(ack); err != nil {
-		h.log.Debug("发送 ack 失败", "id", c.ID, "err", err)
+		h.log.Debug("failed to send ack", "id", c.ID, "err", err)
 	}
 }

@@ -125,7 +125,7 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 			title = env.Payload.Title
 		}
 		if title == "" {
-			title = "需要审批"
+			title = "Approval Required"
 		}
 		body := approvalBody(env)
 		payload = map[string]any{
@@ -153,11 +153,11 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 			title = env.Payload.Title
 		}
 		if title == "" {
-			title = "任务完成"
+			title = "Task Complete"
 		}
 		body := wire.Summarize(env.Payload.ReplySummary, wire.MaxReplyRunes)
 		if body == "" {
-			body = "Agent 已完成任务"
+			body = "Agent completed the task"
 		}
 		payload = map[string]any{
 			"aps": map[string]any{
@@ -191,7 +191,7 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 	if res.Prune {
 		// device token 已失效：清空，等待 App 下次启动重新上报。
 		if err := d.cfg.Store.ClearDeviceAPNSToken(device.ID); err != nil {
-			d.log.Warn("清空失效 device token 失败", "device_id", device.ID, "err", err)
+			d.log.Warn("failed to clear stale device token", "device_id", device.ID, "err", err)
 		}
 	}
 }
@@ -200,15 +200,15 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 func approvalBody(env wire.Envelope) string {
 	tool := env.Payload.ToolName
 	if tool == "" {
-		tool = "工具调用"
+		tool = "a tool"
 	}
 	agent := string(env.Agent)
 	if agent == "" {
 		agent = "Agent"
 	}
-	body := fmt.Sprintf("%s 请求执行 %s", agent, tool)
+	body := fmt.Sprintf("%s requests to run %s", agent, tool)
 	if summary := env.Payload.CommandSummary; summary != "" {
-		body += "：" + summary
+		body += ": " + summary
 	}
 	return wire.Truncate(body, 200)
 }
@@ -217,7 +217,7 @@ func approvalBody(env wire.Envelope) string {
 func (d *Deliverer) sendLiveActivity(tier store.Tier, device store.Device, env wire.Envelope) {
 	tokens, err := d.cfg.Store.LATokensForDaemon(env.DaemonID)
 	if err != nil {
-		d.log.Warn("读取 Live Activity token 失败", "daemon_id", env.DaemonID, "err", err)
+		d.log.Warn("failed to list Live Activity tokens", "daemon_id", env.DaemonID, "err", err)
 		return
 	}
 	if len(tokens) == 0 {
@@ -247,7 +247,7 @@ func (d *Deliverer) sendLiveActivity(tier store.Tier, device store.Device, env w
 			if res.Prune {
 				// token 已失效：剪枝，后续事件不再尝试。
 				if err := d.cfg.Store.DeleteLAToken(device.ID, session); err != nil {
-					d.log.Warn("删除失效 LA token 失败", "device_id", device.ID, "session_id", session, "err", err)
+					d.log.Warn("failed to delete stale LA token", "device_id", device.ID, "session_id", session, "err", err)
 				}
 			}
 		})
@@ -260,7 +260,7 @@ func (d *Deliverer) push(tier store.Tier, kind, deviceID string, env wire.Envelo
 	// 不触碰 token；实时 WSS/inbox/resync 不受影响，App 前台仍可审批（fail-safe）。
 	if d.cfg.Quota != nil && !d.cfg.Quota.AllowPush(tier, env.DaemonID) {
 		d.cfg.Metrics.IncQuotaRejected("push_" + kind)
-		d.log.Info("推送被日配额拦截", "kind", kind, "daemon_id", env.DaemonID,
+		d.log.Info("push blocked by daily quota", "kind", kind, "daemon_id", env.DaemonID,
 			"device_id", deviceID, "event_id", env.EventID)
 		return apns.Result{}
 	}
@@ -271,17 +271,17 @@ func (d *Deliverer) push(tier store.Tier, kind, deviceID string, env wire.Envelo
 	switch {
 	case err != nil:
 		status = "error"
-		d.log.Warn("APNs 推送失败", "kind", kind, "device_id", deviceID,
+		d.log.Warn("APNs push failed", "kind", kind, "device_id", deviceID,
 			"event_id", env.EventID, "status", res.Status, "reason", res.Reason, "err", err)
 	case res.Skipped:
 		status = "skipped"
-		d.log.Debug("APNs 推送跳过（topic 退避）", "kind", kind, "device_id", deviceID, "event_id", env.EventID)
+		d.log.Debug("APNs push skipped (topic backoff)", "kind", kind, "device_id", deviceID, "event_id", env.EventID)
 	case !res.Accepted():
 		level := slog.LevelWarn
 		if res.Status == 400 || res.Status == 403 {
 			level = slog.LevelError
 		}
-		d.log.Log(context.Background(), level, "APNs 拒绝推送", "kind", kind, "device_id", deviceID,
+		d.log.Log(context.Background(), level, "APNs rejected push", "kind", kind, "device_id", deviceID,
 			"event_id", env.EventID, "status", res.Status, "reason", res.Reason, "prune", res.Prune)
 	}
 	d.cfg.Metrics.IncPush(kind, status)

@@ -22,10 +22,10 @@ import (
 
 func runTestPush(args []string) int {
 	fs := flag.NewFlagSet("test-push", flag.ContinueOnError)
-	relay := fs.String("relay", "", "relay 基址(缺省取 PUBLIC_BASE_URL 环境变量)")
-	cred := fs.String("credential", "", "daemon 凭据 dpd_...(必填)")
-	kind := fs.String("kind", "approval", "事件类型:approval | task")
-	wait := fs.Duration("wait", 60*time.Second, "Ack 后等待 App 决策的时长")
+	relay := fs.String("relay", "", "relay base URL (defaults to PUBLIC_BASE_URL env var)")
+	cred := fs.String("credential", "", "daemon credential dpd_... (required)")
+	kind := fs.String("kind", "approval", "event kind: approval | task")
+	wait := fs.Duration("wait", 60*time.Second, "how long to wait for the app decision after Ack")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}
@@ -34,12 +34,12 @@ func runTestPush(args []string) int {
 		base = strings.TrimRight(os.Getenv("PUBLIC_BASE_URL"), "/")
 	}
 	if base == "" || *cred == "" {
-		fmt.Fprintln(os.Stderr, "需要 --relay(或 PUBLIC_BASE_URL)与 --credential")
+		fmt.Fprintln(os.Stderr, "--relay (or PUBLIC_BASE_URL) and --credential are required")
 		return 2
 	}
 	daemonID, _, ok := pairing.ParseCredential(*cred, pairing.DaemonPrefix, pairing.DaemonIDPrefix)
 	if !ok {
-		fmt.Fprintln(os.Stderr, "--credential 不是合法 daemon 凭据(dpd_)")
+		fmt.Fprintln(os.Stderr, "--credential is not a valid daemon credential (dpd_)")
 		return 2
 	}
 	env, err := buildTestEnvelope(daemonID, *kind)
@@ -54,7 +54,7 @@ func runTestPush(args []string) int {
 
 	wsURL := strings.Replace(base, "https://", "wss://", 1)
 	wsURL = strings.Replace(wsURL, "http://", "ws://", 1) + "/ws/daemon"
-	fmt.Printf("连接 %s ...\n", wsURL)
+	fmt.Printf("connecting to %s ...\n", wsURL)
 	conn, resp, err := websocket.Dial(ctx, wsURL, &websocket.DialOptions{
 		HTTPHeader:      http.Header{"Authorization": {"Bearer " + *cred}},
 		CompressionMode: websocket.CompressionDisabled,
@@ -64,7 +64,7 @@ func runTestPush(args []string) int {
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		fmt.Fprintf(os.Stderr, "连接失败(HTTP %d): %v\n", status, err)
+		fmt.Fprintf(os.Stderr, "connect failed (HTTP %d): %v\n", status, err)
 		return 1
 	}
 	defer conn.CloseNow()
@@ -74,24 +74,24 @@ func runTestPush(args []string) int {
 		Role: wire.RoleDaemon, DaemonID: daemonID, TS: time.Now().Unix(),
 	}
 	if err := writeMsg(ctx, conn, hello); err != nil {
-		fmt.Fprintf(os.Stderr, "握手发送失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to send hello: %v\n", err)
 		return 1
 	}
 	ackMsg, err := readMsg(ctx, conn)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "握手失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "handshake failed: %v\n", err)
 		return 1
 	}
 	if _, ok := ackMsg.(*wire.HelloAck); !ok {
-		fmt.Fprintln(os.Stderr, "握手失败:首条响应不是 hello_ack")
+		fmt.Fprintln(os.Stderr, "handshake failed: first response is not hello_ack")
 		return 1
 	}
 
 	if err := writeMsg(ctx, conn, *env); err != nil {
-		fmt.Fprintf(os.Stderr, "发送事件失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "failed to send event: %v\n", err)
 		return 1
 	}
-	fmt.Printf("已发送 %s 事件 event_id=%s approval_id=%s\n",
+	fmt.Printf("sent %s event event_id=%s approval_id=%s\n",
 		env.Type, env.EventID, env.ApprovalID)
 
 	// 先等 Ack;accepted 后继续等决策回流(手机上点一下,这里能看到)。
@@ -100,10 +100,10 @@ func runTestPush(args []string) int {
 		msg, err := readMsg(ctx, conn)
 		if err != nil {
 			if acked {
-				fmt.Println("等待决策超时/连接关闭(推送是否到达请看 iPhone)")
+				fmt.Println("timed out or connection closed while waiting for decision (check the iPhone to see whether the push arrived)")
 				return 0
 			}
-			fmt.Fprintf(os.Stderr, "未收到 Ack: %v\n", err)
+			fmt.Fprintf(os.Stderr, "no ack received: %v\n", err)
 			return 1
 		}
 		switch m := msg.(type) {
@@ -112,14 +112,14 @@ func runTestPush(args []string) int {
 				continue
 			}
 			if m.Status != wire.AckAccepted {
-				fmt.Fprintf(os.Stderr, "relay 拒绝事件: %s(可能触发配额闸或凭据失效)\n", m.Status)
+				fmt.Fprintf(os.Stderr, "relay rejected event: %s (quota gate or invalid credential)\n", m.Status)
 				return 1
 			}
 			acked = true
-			fmt.Printf("relay 已受理;等待 App 决策(最长 %s,Ctrl-C 退出)...\n", *wait)
-			fmt.Println("→ 请查看 iPhone 锁屏通知并点击批准/拒绝")
+			fmt.Printf("relay accepted the event; waiting for app decision (up to %s, Ctrl-C to exit)...\n", *wait)
+			fmt.Println("→ check the iPhone lock screen notification and tap approve/deny")
 		case *wire.Decision:
-			fmt.Printf("收到决策: %s (approval_id=%s)\n", m.Decision, m.ApprovalID)
+			fmt.Printf("decision received: %s (approval_id=%s)\n", m.Decision, m.ApprovalID)
 			return 0
 		}
 	}
@@ -150,10 +150,10 @@ func buildTestEnvelope(daemonID, kind string) (*wire.Envelope, error) {
 		env.Type = wire.EventTaskComplete
 		env.Payload = wire.Payload{
 			SessionTitle: "DevPilot Test Push",
-			ReplySummary: "test-push 验证回执",
+			ReplySummary: "Test push completed",
 		}
 	default:
-		return nil, fmt.Errorf("--kind 只能是 approval 或 task")
+		return nil, fmt.Errorf("--kind must be approval or task")
 	}
 	return env, nil
 }

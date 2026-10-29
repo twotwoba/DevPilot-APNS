@@ -48,15 +48,15 @@ func CanonicalJSON(raw []byte) ([]byte, error) {
 	dec.UseNumber()
 	var v any
 	if err := dec.Decode(&v); err != nil {
-		return nil, fmt.Errorf("wire: 解析工具输入失败: %w", err)
+		return nil, fmt.Errorf("wire: failed to parse tool input: %w", err)
 	}
 	// 拒绝尾随的第二个 JSON 值，避免「看到的」与「哈希的」不一致。
 	if dec.More() {
-		return nil, fmt.Errorf("wire: 工具输入包含多余内容")
+		return nil, fmt.Errorf("wire: tool input contains trailing data")
 	}
 	out, err := json.Marshal(v)
 	if err != nil {
-		return nil, fmt.Errorf("wire: 规范化工具输入失败: %w", err)
+		return nil, fmt.Errorf("wire: failed to canonicalize tool input: %w", err)
 	}
 	return out, nil
 }

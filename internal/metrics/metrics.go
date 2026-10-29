@@ -39,10 +39,10 @@ func (m *Metrics) IncDecision(decision, status string) {
 // IncResync 记录一次 resync。
 func (m *Metrics) IncResync() { m.resyncs.Add(1) }
 
-// IncDedup 记录一次 event_id 去重命中。
+// IncDedup 记录一次 event_id dedup hits。
 func (m *Metrics) IncDedup() { m.dedupHits.Add(1) }
 
-// IncPush 记录一次 APNs 投递结果（kind=alert|liveactivity，status=HTTP 状态或 error/skipped）。
+// IncPush 记录一次 APNs delivery results（kind=alert|liveactivity，status=HTTP 状态或 error/skipped）。
 func (m *Metrics) IncPush(kind, status string) {
 	inc(&m.pushes, kind+"|"+status)
 }
@@ -55,38 +55,38 @@ func (m *Metrics) IncQuotaRejected(kind string) { inc(&m.quota, kind) }
 // Render 输出 Prometheus 文本格式。
 func (m *Metrics) Render() string {
 	var b strings.Builder
-	b.WriteString("# HELP devpilot_events_total 上行事件数\n# TYPE devpilot_events_total counter\n")
+	b.WriteString("# HELP devpilot_events_total Ingested events\n# TYPE devpilot_events_total counter\n")
 	writeCounters(&b, "devpilot_events_total", "type", &m.events)
 
-	b.WriteString("# HELP devpilot_decisions_total 决策数\n# TYPE devpilot_decisions_total counter\n")
+	b.WriteString("# HELP devpilot_decisions_total Decisions\n# TYPE devpilot_decisions_total counter\n")
 	writeDecisions(&b, &m.decisions)
 
-	b.WriteString("# HELP devpilot_resync_total 重同步次数\n# TYPE devpilot_resync_total counter\n")
+	b.WriteString("# HELP devpilot_resync_total Resync count\n# TYPE devpilot_resync_total counter\n")
 	fmt.Fprintf(&b, "devpilot_resync_total %d\n", m.resyncs.Load())
 
-	b.WriteString("# HELP devpilot_dedup_hits_total event_id 去重命中\n# TYPE devpilot_dedup_hits_total counter\n")
+	b.WriteString("# HELP devpilot_dedup_hits_total event_id dedup hits\n# TYPE devpilot_dedup_hits_total counter\n")
 	fmt.Fprintf(&b, "devpilot_dedup_hits_total %d\n", m.dedupHits.Load())
 
-	b.WriteString("# HELP devpilot_apns_pushes_total APNs 投递结果\n# TYPE devpilot_apns_pushes_total counter\n")
+	b.WriteString("# HELP devpilot_apns_pushes_total APNs delivery results\n# TYPE devpilot_apns_pushes_total counter\n")
 	writePushes(&b, &m.pushes)
 
-	b.WriteString("# HELP devpilot_quota_rejected_total 被配额闸拒绝的请求数\n# TYPE devpilot_quota_rejected_total counter\n")
+	b.WriteString("# HELP devpilot_quota_rejected_total Requests rejected by quota\n# TYPE devpilot_quota_rejected_total counter\n")
 	writeCounters(&b, "devpilot_quota_rejected_total", "kind", &m.quota)
 
 	if m.DaemonConns != nil {
-		b.WriteString("# HELP devpilot_daemon_connections 在线 daemon 连接数\n# TYPE devpilot_daemon_connections gauge\n")
+		b.WriteString("# HELP devpilot_daemon_connections Online daemon connections\n# TYPE devpilot_daemon_connections gauge\n")
 		fmt.Fprintf(&b, "devpilot_daemon_connections %d\n", m.DaemonConns())
 	}
 	if m.AppConns != nil {
-		b.WriteString("# HELP devpilot_app_connections 在线 App 连接数\n# TYPE devpilot_app_connections gauge\n")
+		b.WriteString("# HELP devpilot_app_connections Online app connections\n# TYPE devpilot_app_connections gauge\n")
 		fmt.Fprintf(&b, "devpilot_app_connections %d\n", m.AppConns())
 	}
 	if m.Pending != nil {
-		b.WriteString("# HELP devpilot_pending_approvals 等待中的审批数\n# TYPE devpilot_pending_approvals gauge\n")
+		b.WriteString("# HELP devpilot_pending_approvals Pending approvals\n# TYPE devpilot_pending_approvals gauge\n")
 		fmt.Fprintf(&b, "devpilot_pending_approvals %d\n", m.Pending())
 	}
 	if m.BansActive != nil {
-		b.WriteString("# HELP devpilot_ban_active 当前封禁中的 IP 聚合数\n# TYPE devpilot_ban_active gauge\n")
+		b.WriteString("# HELP devpilot_ban_active Currently banned IP aggregates\n# TYPE devpilot_ban_active gauge\n")
 		fmt.Fprintf(&b, "devpilot_ban_active %d\n", m.BansActive())
 	}
 	return b.String()

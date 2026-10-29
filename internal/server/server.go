@@ -64,7 +64,7 @@ type Server struct {
 // New 构造 server。
 func New(cfg Config) (*Server, error) {
 	if cfg.Store == nil || cfg.Hub == nil {
-		return nil, errors.New("server: Store 与 Hub 均不能为空")
+		return nil, errors.New("server: Store and Hub must not be nil")
 	}
 	if cfg.Logger == nil {
 		cfg.Logger = slog.Default()
@@ -118,7 +118,7 @@ type pairingSessionRequest struct {
 
 func (s *Server) handlePairingSession(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.PairLimiter.Allow(s.ipOf(r)) {
-		writeError(w, http.StatusTooManyRequests, "请求过于频繁")
+		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	var req pairingSessionRequest
@@ -128,14 +128,14 @@ func (s *Server) handlePairingSession(w http.ResponseWriter, r *http.Request) {
 	now := s.now().Unix()
 	code := canonicalCode(req.Code)
 	if !validCode(code) || !validDaemonID(req.DaemonID) || !validHash(req.DaemonCredHash) {
-		writeError(w, http.StatusBadRequest, "配对会话参数不合法")
+		writeError(w, http.StatusBadRequest, "invalid pairing session parameters")
 		return
 	}
 	if req.ExpiresAt == 0 {
 		req.ExpiresAt = now + int64(pairing.CodeTTL.Seconds())
 	}
 	if req.ExpiresAt <= now+60 || req.ExpiresAt > now+int64((30*time.Minute).Seconds()) {
-		writeError(w, http.StatusBadRequest, "配对会话有效期不合法")
+		writeError(w, http.StatusBadRequest, "invalid pairing session expiry")
 		return
 	}
 	name := truncateRunes(strings.TrimSpace(req.DaemonName), maxNameRunes)
@@ -146,11 +146,11 @@ func (s *Server) handlePairingSession(w http.ResponseWriter, r *http.Request) {
 	// 已注册的 daemon 轮换凭据时必须证明持有旧凭据，防止他人抢占 daemon_id。
 	if _, err := s.cfg.Store.Daemon(req.DaemonID); err == nil {
 		if _, ok := s.authDaemon(r); !ok {
-			writeError(w, http.StatusUnauthorized, "轮换凭据需要提供当前 daemon 凭据")
+			writeError(w, http.StatusUnauthorized, "credential rotation requires the current daemon credential")
 			return
 		}
 	} else if !errors.Is(err, store.ErrNotFound) {
-		s.internal(w, "读取 daemon 失败", err)
+		s.internal(w, "failed to read daemon", err)
 		return
 	}
 
@@ -162,7 +162,7 @@ func (s *Server) handlePairingSession(w http.ResponseWriter, r *http.Request) {
 		ExpiresAt:  req.ExpiresAt,
 		CreatedAt:  now,
 	}); err != nil {
-		s.internal(w, "登记配对会话失败", err)
+		s.internal(w, "failed to register pairing session", err)
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]any{
@@ -181,7 +181,7 @@ type pairRequest struct {
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	if !s.cfg.AttemptLimiter.Allow(s.ipOf(r)) {
-		writeError(w, http.StatusTooManyRequests, "请求过于频繁")
+		writeError(w, http.StatusTooManyRequests, "too many requests")
 		return
 	}
 	var req pairRequest
@@ -189,19 +189,19 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validCode(canonicalCode(req.Code)) {
-		writeError(w, http.StatusBadRequest, "配对码格式不合法")
+		writeError(w, http.StatusBadRequest, "invalid pairing code format")
 		return
 	}
 	// 档位由 App 配对时提交(空=free;非法值拒绝,防拼写错误静默降档)。
 	tier, ok := store.ParseTier(req.Tier)
 	if !ok {
-		writeError(w, http.StatusBadRequest, "档位不合法(空或 free|pro)")
+		writeError(w, http.StatusBadRequest, "invalid tier (empty or free|pro)")
 		return
 	}
 	now := s.now().Unix()
 	secret, err := pairing.NewSecret()
 	if err != nil {
-		s.internal(w, "生成设备凭据失败", err)
+		s.internal(w, "failed to generate device credential", err)
 		return
 	}
 	deviceID := pairing.NewDeviceID()
@@ -218,16 +218,16 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	daemon, _, err := s.cfg.Store.Pair(pairing.CodeHash(canonicalCode(req.Code)), device, tier, now)
 	switch {
 	case errors.Is(err, store.ErrCodeExpired):
-		writeError(w, http.StatusGone, "配对码已过期")
+		writeError(w, http.StatusGone, "pairing code expired")
 		return
 	case errors.Is(err, store.ErrCodeInvalid):
-		writeError(w, http.StatusNotFound, "配对码无效或已使用")
+		writeError(w, http.StatusNotFound, "pairing code invalid or already used")
 		return
 	case err != nil:
-		s.internal(w, "配对失败", err)
+		s.internal(w, "pairing failed", err)
 		return
 	}
-	s.log.Info("设备配对成功", "daemon_id", daemon.ID, "device_id", deviceID, "device_name", name, "tier", tier)
+	s.log.Info("device paired", "daemon_id", daemon.ID, "device_id", deviceID, "device_name", name, "tier", tier)
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"device_id":         deviceID,
 		"device_credential": pairing.DeviceCredential(deviceID, secret),
@@ -242,42 +242,42 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDaemonWS(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := s.authDaemon(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "daemon 凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid daemon credential")
 		return
 	}
 	// 建连即刷新活跃时刻,TTL 清理据此判定存续。
 	if err := s.cfg.Store.TouchDaemon(daemon.ID, s.now().Unix()); err != nil {
-		s.log.Warn("刷新 daemon 活跃时刻失败", "daemon_id", daemon.ID, "err", err)
+		s.log.Warn("failed to touch daemon liveness", "daemon_id", daemon.ID, "err", err)
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
-		s.log.Warn("daemon WebSocket 升级失败", "daemon_id", daemon.ID, "err", err)
+		s.log.Warn("daemon websocket upgrade failed", "daemon_id", daemon.ID, "err", err)
 		return
 	}
-	s.log.Info("daemon 已连接", "daemon_id", daemon.ID)
+	s.log.Info("daemon connected", "daemon_id", daemon.ID)
 	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleDaemon, daemon.ID, daemon.ID, daemon.Tier)
-	s.log.Info("daemon 已断开", "daemon_id", daemon.ID)
+	s.log.Info("daemon disconnected", "daemon_id", daemon.ID)
 }
 
 func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.authDevice(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
 		return
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
 		CompressionMode: websocket.CompressionDisabled,
 	})
 	if err != nil {
-		s.log.Warn("App WebSocket 升级失败", "device_id", device.ID, "err", err)
+		s.log.Warn("app websocket upgrade failed", "device_id", device.ID, "err", err)
 		return
 	}
 	_ = s.cfg.Store.TouchDevice(device.ID, s.now().Unix())
-	s.log.Info("App 已连接", "device_id", device.ID, "daemon_id", device.DaemonID)
+	s.log.Info("app connected", "device_id", device.ID, "daemon_id", device.DaemonID)
 	s.cfg.Hub.Serve(r.Context(), conn, wire.RoleApp, device.ID, device.DaemonID, "")
-	s.log.Info("App 已断开", "device_id", device.ID)
+	s.log.Info("app disconnected", "device_id", device.ID)
 }
 
 // ---------- Live Activity / 对账 ----------
@@ -292,7 +292,7 @@ type laTokenRequest struct {
 func (s *Server) handleLATokenREST(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.authDevice(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
 		return
 	}
 	var req laTokenRequest
@@ -300,7 +300,7 @@ func (s *Server) handleLATokenREST(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if req.DaemonID != device.DaemonID || req.SessionID == "" {
-		writeError(w, http.StatusBadRequest, "la_token 参数不合法")
+		writeError(w, http.StatusBadRequest, "invalid la_token parameters")
 		return
 	}
 	if req.Event == "" {
@@ -309,23 +309,23 @@ func (s *Server) handleLATokenREST(w http.ResponseWriter, r *http.Request) {
 	switch req.Event {
 	case wire.LAStart, wire.LAUpdate:
 		if req.PushToken == "" {
-			writeError(w, http.StatusBadRequest, "缺少 push_token")
+			writeError(w, http.StatusBadRequest, "missing push_token")
 			return
 		}
 		if err := s.cfg.Store.PutLAToken(store.LAToken{
 			DeviceID: device.ID, DaemonID: device.DaemonID, SessionID: req.SessionID,
 			PushToken: req.PushToken, UpdatedAt: s.now().Unix(),
 		}); err != nil {
-			s.internal(w, "保存 LA token 失败", err)
+			s.internal(w, "failed to save LA token", err)
 			return
 		}
 	case wire.LAEnd:
 		if err := s.cfg.Store.DeleteLAToken(device.ID, req.SessionID); err != nil {
-			s.internal(w, "删除 LA token 失败", err)
+			s.internal(w, "failed to delete LA token", err)
 			return
 		}
 	default:
-		writeError(w, http.StatusBadRequest, "未知 la event")
+		writeError(w, http.StatusBadRequest, "unknown la event")
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
@@ -334,20 +334,20 @@ func (s *Server) handleLATokenREST(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.authDevice(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
 		return
 	}
 	now := s.now().Unix()
 	pending, err := s.cfg.Store.PendingForDaemon(device.DaemonID, now)
 	if err != nil {
-		s.internal(w, "读取待审批失败", err)
+		s.internal(w, "failed to read pending approvals", err)
 		return
 	}
 	cursor, _ := strconv.ParseInt(r.URL.Query().Get("cursor"), 10, 64)
 	since, _ := strconv.ParseInt(r.URL.Query().Get("since"), 10, 64)
 	events, next, err := s.cfg.Store.InboxSince(device.DaemonID, cursor, since, 200)
 	if err != nil {
-		s.internal(w, "读取收件箱失败", err)
+		s.internal(w, "failed to read inbox", err)
 		return
 	}
 	result := wire.ResyncResult{
@@ -375,7 +375,7 @@ type deviceTokenRequest struct {
 func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.authDevice(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
 		return
 	}
 	var req deviceTokenRequest
@@ -384,7 +384,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	}
 	token := strings.TrimSpace(req.APNSToken)
 	if token == "" || len(token) > 256 {
-		writeError(w, http.StatusBadRequest, "apns_token 不合法")
+		writeError(w, http.StatusBadRequest, "invalid apns_token")
 		return
 	}
 	// 档位刷新:订阅到期降 free / 续费升 pro,配额随之收敛,不需要重新扫码。
@@ -395,21 +395,21 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	if req.Tier != "" {
 		var ok bool
 		if tier, ok = store.ParseTier(req.Tier); !ok {
-			writeError(w, http.StatusBadRequest, "tier 不合法")
+			writeError(w, http.StatusBadRequest, "invalid tier")
 			return
 		}
 	}
 	if err := s.cfg.Store.UpdateDeviceAPNSToken(device.ID, token, s.now().Unix()); err != nil {
-		s.internal(w, "更新 APNs token 失败", err)
+		s.internal(w, "failed to update APNs token", err)
 		return
 	}
 	if req.Tier != "" {
 		if err := s.cfg.Store.SetDaemonTier(device.DaemonID, tier, s.now().Unix()); err != nil {
-			s.internal(w, "更新档位失败", err)
+			s.internal(w, "failed to update tier", err)
 			return
 		}
 		s.cfg.Hub.KickDaemon(device.DaemonID)
-		s.log.Info("daemon 档位已更新", "daemon_id", device.DaemonID, "tier", tier)
+		s.log.Info("daemon tier updated", "daemon_id", device.DaemonID, "tier", tier)
 	}
 	w.WriteHeader(http.StatusNoContent)
 }
@@ -418,16 +418,16 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 	device, ok := s.authDevice(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "设备凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
 		return
 	}
 	if err := s.cfg.Store.DeleteDevice(device.ID); err != nil {
-		s.internal(w, "解绑设备失败", err)
+		s.internal(w, "failed to unbind device", err)
 		return
 	}
 	// 踢掉该设备的在线连接：防止已注销 device 的僵尸连接继续收事件。
 	s.cfg.Hub.KickDevice(device.ID)
-	s.log.Info("设备已解绑", "device_id", device.ID, "daemon_id", device.DaemonID)
+	s.log.Info("device unbound", "device_id", device.ID, "daemon_id", device.DaemonID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -436,16 +436,16 @@ func (s *Server) handleDeleteDevice(w http.ResponseWriter, r *http.Request) {
 func (s *Server) handleDeleteDaemon(w http.ResponseWriter, r *http.Request) {
 	daemon, ok := s.authDaemon(r)
 	if !ok {
-		writeError(w, http.StatusUnauthorized, "daemon 凭据无效")
+		writeError(w, http.StatusUnauthorized, "invalid daemon credential")
 		return
 	}
 	if err := s.cfg.Store.DeleteDaemonCascade(daemon.ID); err != nil {
-		s.internal(w, "吊销 daemon 失败", err)
+		s.internal(w, "failed to revoke daemon", err)
 		return
 	}
 	// 级联删除后凭据已失效，踢掉 daemon 及其名下设备的全部在线连接。
 	s.cfg.Hub.KickDaemon(daemon.ID)
-	s.log.Info("daemon 已吊销", "daemon_id", daemon.ID)
+	s.log.Info("daemon revoked", "daemon_id", daemon.ID)
 	w.WriteHeader(http.StatusNoContent)
 }
 
@@ -458,12 +458,12 @@ func (s *Server) handleHealthz(w http.ResponseWriter, _ *http.Request) {
 
 func (s *Server) handleReadyz(w http.ResponseWriter, _ *http.Request) {
 	if err := s.cfg.Store.Ping(); err != nil {
-		writeError(w, http.StatusServiceUnavailable, "数据库不可用")
+		writeError(w, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
 	if s.cfg.Ready != nil {
 		if err := s.cfg.Ready(); err != nil {
-			writeError(w, http.StatusServiceUnavailable, "依赖不可用")
+			writeError(w, http.StatusServiceUnavailable, "dependency unavailable")
 			return
 		}
 	}
@@ -475,7 +475,7 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	// 常量时间比较,防时序侧信道猜 token。
 	if s.cfg.MetricsToken != "" &&
 		subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(s.cfg.MetricsToken)) != 1 {
-		writeError(w, http.StatusUnauthorized, "未授权")
+		writeError(w, http.StatusUnauthorized, "unauthorized")
 		return
 	}
 	w.Header().Set("Content-Type", "text/plain; version=0.0.4; charset=utf-8")
@@ -530,7 +530,7 @@ func (w *statusWriter) Unwrap() http.ResponseWriter { return w.ResponseWriter }
 func (w *statusWriter) Hijack() (net.Conn, *bufio.ReadWriter, error) {
 	hj, ok := w.ResponseWriter.(http.Hijacker)
 	if !ok {
-		return nil, nil, errors.New("server: 底层 ResponseWriter 不支持 Hijack")
+		return nil, nil, errors.New("server: underlying ResponseWriter does not support Hijack")
 	}
 	return hj.Hijack()
 }
@@ -558,8 +558,8 @@ func (s *Server) banGuard(next http.Handler) http.Handler {
 		}
 		key := ratelimit.AggregateKey(ip)
 		if s.cfg.Bans.Banned(key) {
-			s.log.Debug("已封禁 IP 被拒", "ip", ip, "path", r.URL.Path)
-			writeError(w, http.StatusForbidden, "请求被拒绝")
+			s.log.Debug("banned IP rejected", "ip", ip, "path", r.URL.Path)
+			writeError(w, http.StatusForbidden, "request rejected")
 			return
 		}
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
@@ -590,8 +590,8 @@ func (s *Server) recoverPanics(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		defer func() {
 			if v := recover(); v != nil {
-				s.log.Error("请求处理 panic", "path", r.URL.Path, "panic", v)
-				writeError(w, http.StatusInternalServerError, "内部错误")
+				s.log.Error("panic handling request", "path", r.URL.Path, "panic", v)
+				writeError(w, http.StatusInternalServerError, "internal error")
 			}
 		}()
 		next.ServeHTTP(w, r)
@@ -602,11 +602,11 @@ func decodeJSON(w http.ResponseWriter, r *http.Request, v any) bool {
 	r.Body = http.MaxBytesReader(w, r.Body, maxBodyBytes)
 	dec := json.NewDecoder(r.Body)
 	if err := dec.Decode(v); err != nil {
-		writeError(w, http.StatusBadRequest, "请求体不是合法 JSON")
+		writeError(w, http.StatusBadRequest, "request body is not valid JSON")
 		return false
 	}
 	if err := dec.Decode(&struct{}{}); err != io.EOF {
-		writeError(w, http.StatusBadRequest, "请求体包含多余内容")
+		writeError(w, http.StatusBadRequest, "request body contains trailing data")
 		return false
 	}
 	return true

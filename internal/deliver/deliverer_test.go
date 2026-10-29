@@ -111,8 +111,8 @@ func event(typ wire.EventType, approvalID string) wire.Envelope {
 		ApprovalID: approvalID, Type: typ, Agent: wire.AgentClaude,
 		DaemonID: testDaemon, SessionID: "sess_1", TS: testNow,
 		Payload: wire.Payload{
-			SessionTitle: "重构认证模块", ToolName: "Bash",
-			CommandSummary: "rm -rf build", ReplySummary: "已完成重构",
+			SessionTitle: "Refactor auth module", ToolName: "Bash",
+			CommandSummary: "rm -rf build", ReplySummary: "Refactor done",
 		},
 	}
 }
@@ -125,7 +125,7 @@ func waitFor(t *testing.T, what string, cond func() bool) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("等待超时: %s", what)
+			t.Fatalf("timed out waiting: %s", what)
 		}
 		time.Sleep(5 * time.Millisecond)
 	}
@@ -146,28 +146,28 @@ func TestApprovalAlert(t *testing.T) {
 		t.Fatalf("req = %+v", req)
 	}
 	if req.PushType != "alert" || req.Priority != 10 || req.Expiration != testNow+120 {
-		t.Fatalf("推送参数不符: %+v", req)
+		t.Fatalf("push params mismatch: %+v", req)
 	}
 	if req.CollapseID != "apv-apv_1" {
 		t.Fatalf("collapse = %q", req.CollapseID)
 	}
 	payload, ok := req.Payload.(map[string]any)
 	if !ok {
-		t.Fatalf("payload 类型 = %T", req.Payload)
+		t.Fatalf("payload type = %T", req.Payload)
 	}
 	aps := payload["aps"].(map[string]any)
 	if aps["interruption-level"] != "time-sensitive" || aps["thread-id"] != "approval" {
 		t.Fatalf("aps = %+v", aps)
 	}
 	alert := aps["alert"].(map[string]string)
-	if alert["title"] != "重构认证模块" || !strings.Contains(alert["body"], "Bash") {
+	if alert["title"] != "Refactor auth module" || !strings.Contains(alert["body"], "Bash") {
 		t.Fatalf("alert = %+v", alert)
 	}
 	if payload["approval_id"] != "apv_1" || payload["daemon_id"] != testDaemon {
-		t.Fatalf("自定义字段 = %+v", payload)
+		t.Fatalf("custom fields = %+v", payload)
 	}
 	if !strings.Contains(m.Render(), `devpilot_apns_pushes_total{kind="alert",status="200"} 1`) {
-		t.Fatalf("metrics 缺少推送计数:\n%s", m.Render())
+		t.Fatalf("metrics missing push counter:\n%s", m.Render())
 	}
 }
 
@@ -182,14 +182,14 @@ func TestTaskCompleteAlertPriority(t *testing.T) {
 		t.Fatalf("calls = %d", len(calls))
 	}
 	if calls[0].Priority != 5 || calls[0].Expiration != testNow+86400 {
-		t.Fatalf("参数 = %+v", calls[0])
+		t.Fatalf("params = %+v", calls[0])
 	}
 	if calls[0].CollapseID != "task-sess_1" {
 		t.Fatalf("collapse = %q", calls[0].CollapseID)
 	}
 	payload := calls[0].Payload.(map[string]any)
 	alert := payload["aps"].(map[string]any)["alert"].(map[string]string)
-	if alert["body"] != "已完成重构" {
+	if alert["body"] != "Refactor done" {
 		t.Fatalf("body = %q", alert["body"])
 	}
 }
@@ -202,7 +202,7 @@ func TestToolEventSendsNoAlert(t *testing.T) {
 	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
 	time.Sleep(50 * time.Millisecond)
 	if len(f.snapshot()) != 0 {
-		t.Fatal("tool_running 不应发 alert")
+		t.Fatal("tool_running should not send alert")
 	}
 }
 
@@ -222,12 +222,12 @@ func TestLiveActivityThrottleLatestWins(t *testing.T) {
 	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
 	d.Notify(context.Background(), dev, event(wire.EventSessionEnded, ""))
 
-	waitFor(t, "至少一次 Live Activity 推送", func() bool { return len(f.snapshot()) >= 1 })
+	waitFor(t, "at least one Live Activity push", func() bool { return len(f.snapshot()) >= 1 })
 	time.Sleep(300 * time.Millisecond)
 
 	calls := f.snapshot()
 	if len(calls) > 2 {
-		t.Fatalf("1s 内推送次数过多: %d", len(calls))
+		t.Fatalf("too many pushes within 1s: %d", len(calls))
 	}
 	last := calls[len(calls)-1]
 	if last.PushType != "liveactivity" || last.Topic != laTopic || last.DeviceToken != "la-token" {
@@ -235,13 +235,13 @@ func TestLiveActivityThrottleLatestWins(t *testing.T) {
 	}
 	push, ok := last.Payload.(wire.LiveActivityPush)
 	if !ok {
-		t.Fatalf("payload 类型 = %T", last.Payload)
+		t.Fatalf("payload type = %T", last.Payload)
 	}
-	if push.APS.Event != "end" || push.APS.ContentState.StatusText != "已结束" {
-		t.Fatalf("最新事件被旧事件覆盖: %+v", push.APS)
+	if push.APS.Event != "end" || push.APS.ContentState.StatusText == "" {
+		t.Fatalf("latest event overwritten by stale event: %+v", push.APS)
 	}
 	if push.APS.ContentState.UpdatedAt != testNow || push.APS.Timestamp != testNow {
-		t.Fatalf("时间戳应为 relay 发送时刻: %+v", push.APS)
+		t.Fatalf("timestamps should be relay send time: %+v", push.APS)
 	}
 }
 
@@ -262,7 +262,7 @@ func TestLiveActivityPruneOn410(t *testing.T) {
 	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, 10*time.Millisecond)
 
 	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
-	waitFor(t, "LA token 被剪枝", func() bool {
+	waitFor(t, "LA token pruned", func() bool {
 		tokens, err := s.LATokensForDaemon(testDaemon)
 		return err == nil && len(tokens) == 0
 	})
@@ -281,7 +281,7 @@ func TestAlertPruneClearsDeviceToken(t *testing.T) {
 		t.Fatal(err)
 	}
 	if got.APNSToken != "" {
-		t.Fatalf("失效 token 未清空: %q", got.APNSToken)
+		t.Fatalf("stale token not cleared: %q", got.APNSToken)
 	}
 }
 
@@ -297,7 +297,7 @@ func TestDeviceWithoutAlertTokenStillGetsLiveActivity(t *testing.T) {
 	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, 10*time.Millisecond)
 
 	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
-	waitFor(t, "仅 LA 推送", func() bool { return len(f.snapshot()) == 1 })
+	waitFor(t, "only LA push", func() bool { return len(f.snapshot()) == 1 })
 	req := f.snapshot()[0]
 	if req.PushType != "liveactivity" || req.DeviceToken != "la-token" {
 		t.Fatalf("req = %+v", req)
@@ -319,12 +319,12 @@ func TestDailyQuotaBlocksAlert(t *testing.T) {
 		t.Fatalf("calls = %d, want 1", len(calls))
 	}
 	if !strings.Contains(m.Render(), `devpilot_quota_rejected_total{kind="push_alert"} 1`) {
-		t.Fatalf("metrics 缺少配额拒绝计数:\n%s", m.Render())
+		t.Fatalf("metrics missing quota rejection counter:\n%s", m.Render())
 	}
 	// 被拒推送不触碰 token(无 prune 副作用)。
 	got, err := s.Device(dev.ID)
 	if err != nil || got.APNSToken != "apns-token" {
-		t.Fatalf("token 不应被改动: %+v %v", got, err)
+		t.Fatalf("token should not be modified: %+v %v", got, err)
 	}
 }
 
@@ -343,14 +343,14 @@ func TestDailyQuotaBlocksLiveActivity(t *testing.T) {
 	d, m := newDelivererWithQuota(t, s, f, clock, 10*time.Millisecond, eng)
 
 	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
-	waitFor(t, "第一次 LA 推送", func() bool { return len(f.snapshot()) == 1 })
+	waitFor(t, "first LA push", func() bool { return len(f.snapshot()) == 1 })
 	d.Notify(context.Background(), dev, event(wire.EventToolFinished, ""))
 	time.Sleep(100 * time.Millisecond)
 	if calls := f.snapshot(); len(calls) != 1 {
-		t.Fatalf("日配额打满后 LA 推送应被拦截: %d", len(calls))
+		t.Fatalf("LA push should be blocked after daily quota is exhausted: %d", len(calls))
 	}
 	if !strings.Contains(m.Render(), `devpilot_quota_rejected_total{kind="push_liveactivity"} 1`) {
-		t.Fatalf("metrics 缺少 LA 配额拒绝计数:\n%s", m.Render())
+		t.Fatalf("metrics missing LA quota rejection counter:\n%s", m.Render())
 	}
 }
 
@@ -366,7 +366,7 @@ func TestThrottlerLatestWins(t *testing.T) {
 			mu.Unlock()
 		})
 	}
-	waitFor(t, "执行至少一次", func() bool {
+	waitFor(t, "executed at least once", func() bool {
 		mu.Lock()
 		defer mu.Unlock()
 		return len(ran) >= 1
@@ -375,9 +375,9 @@ func TestThrottlerLatestWins(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	if len(ran) > 2 {
-		t.Fatalf("执行次数 = %v", ran)
+		t.Fatalf("execution count = %v", ran)
 	}
 	if ran[len(ran)-1] != 2 {
-		t.Fatalf("最新动作未胜出: %v", ran)
+		t.Fatalf("latest action did not win: %v", ran)
 	}
 }

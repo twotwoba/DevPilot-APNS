@@ -37,11 +37,11 @@ const (
 
 var (
 	// ErrNotFound 表示记录不存在。
-	ErrNotFound = errors.New("store: 记录不存在")
+	ErrNotFound = errors.New("store: record not found")
 	// ErrCodeInvalid 表示配对码不存在或已被使用。
-	ErrCodeInvalid = errors.New("store: 配对码无效或已使用")
+	ErrCodeInvalid = errors.New("store: pairing code invalid or already used")
 	// ErrCodeExpired 表示配对码已过期。
-	ErrCodeExpired = errors.New("store: 配对码已过期")
+	ErrCodeExpired = errors.New("store: pairing code expired")
 )
 
 var (
@@ -144,11 +144,11 @@ type Store struct {
 // Open 打开（或创建）数据库并初始化 bucket。
 func Open(path string) (*Store, error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return nil, fmt.Errorf("store: 创建数据目录失败: %w", err)
+		return nil, fmt.Errorf("store: failed to create data directory: %w", err)
 	}
 	db, err := bolt.Open(path, 0o600, &bolt.Options{Timeout: 2 * time.Second})
 	if err != nil {
-		return nil, fmt.Errorf("store: 打开数据库失败: %w", err)
+		return nil, fmt.Errorf("store: failed to open database: %w", err)
 	}
 	s := &Store{db: db, path: path}
 	if err := db.Update(func(tx *bolt.Tx) error {
@@ -185,7 +185,7 @@ func Open(path string) (*Store, error) {
 		return nil
 	}); err != nil {
 		_ = db.Close()
-		return nil, fmt.Errorf("store: 初始化失败: %w", err)
+		return nil, fmt.Errorf("store: failed to initialize: %w", err)
 	}
 	return s, nil
 }
@@ -227,7 +227,7 @@ func (s *Store) Path() string { return s.path }
 func (s *Store) Ping() error {
 	return s.db.View(func(tx *bolt.Tx) error {
 		if tx.Bucket(bucketMeta) == nil {
-			return errors.New("store: meta bucket 缺失")
+			return errors.New("store: meta bucket missing")
 		}
 		return nil
 	})

@@ -69,18 +69,18 @@ func TestPairingFlow(t *testing.T) {
 	}
 	credID, credSecret, ok := pairing.ParseCredential(cred, pairing.DaemonPrefix, pairing.DaemonIDPrefix)
 	if !ok {
-		t.Fatalf("测试凭据无法解析: %s", cred)
+		t.Fatalf("cannot parse test credential: %s", cred)
 	}
 	if _, ok := s.VerifyDaemon(credID, credSecret); !ok {
-		t.Fatal("daemon 凭据校验失败")
+		t.Fatal("daemon credential verification failed")
 	}
 	if _, ok := s.VerifyDevice(device.ID, "wrongwrongwrongwrongwrongwrongwrong"); ok {
-		t.Fatal("错误 device secret 不应通过")
+		t.Fatal("wrong device secret should not pass")
 	}
 
 	// 配对码一次性。
 	if _, _, err := s.Pair(pairing.CodeHash(code), device, TierFree, testNow); err != ErrCodeInvalid {
-		t.Fatalf("重复使用配对码 err = %v", err)
+		t.Fatalf("reused pairing code err = %v", err)
 	}
 }
 
@@ -109,10 +109,10 @@ func TestPairReplacesOldDevice(t *testing.T) {
 	_, second := pairDevice(t, s, "ZZZZZZZZZZZZZZZZZZZZZZZZZZ")
 
 	if _, err := s.Device(first.ID); err != ErrNotFound {
-		t.Fatalf("旧设备未删除: %v", err)
+		t.Fatalf("old device not deleted: %v", err)
 	}
 	if toks, err := s.LATokensForDaemon(daemonID); err != nil || len(toks) != 0 {
-		t.Fatalf("旧设备 LA token 应级联清除: %+v err=%v", toks, err)
+		t.Fatalf("old device LA tokens should be cascade-cleared: %+v err=%v", toks, err)
 	}
 	devices, err := s.DevicesForDaemon(daemonID)
 	if err != nil || len(devices) != 1 || devices[0].ID != second.ID {
@@ -155,7 +155,7 @@ func TestInboxSeqAndDedup(t *testing.T) {
 	}
 	events, next, err = s.InboxSince(daemonID, next, 0, 10)
 	if err != nil || len(events) != 1 || events[0].Seq != 2 || next != 0 {
-		t.Fatalf("第二页 events=%+v next=%d err=%v", events, next, err)
+		t.Fatalf("page 2 events=%+v next=%d err=%v", events, next, err)
 	}
 }
 
@@ -171,7 +171,7 @@ func TestInboxTTLCleanup(t *testing.T) {
 	}
 	events, _, err := s.InboxSince(daemonID, 0, 0, 10)
 	if err != nil || len(events) != 0 {
-		t.Fatalf("过期事件未清理: %+v err=%v", events, err)
+		t.Fatalf("expired events not cleaned up: %+v err=%v", events, err)
 	}
 }
 
@@ -198,13 +198,13 @@ func TestDecisionFirstWinsAndExpiry(t *testing.T) {
 	}
 	status, _, err = s.ApplyDecision(approvalID, daemonID, "denied", testNow+2)
 	if err != nil || status != wire.AckAlreadyDecided {
-		t.Fatalf("重复决策 status=%v err=%v", status, err)
+		t.Fatalf("duplicate decision status=%v err=%v", status, err)
 	}
 	if status, _, _ := s.ApplyDecision(approvalID, "dd_other", "deny", testNow); status != wire.AckUnknown {
-		t.Fatalf("跨 daemon 决策 status=%v", status)
+		t.Fatalf("cross-daemon decision status=%v", status)
 	}
 	if status, _, _ := s.ApplyDecision("apv_missing", daemonID, "deny", testNow); status != wire.AckUnknown {
-		t.Fatalf("未知审批 status=%v", status)
+		t.Fatalf("unknown approval status=%v", status)
 	}
 
 	// 过期审批：决策返回 expired。
@@ -216,7 +216,7 @@ func TestDecisionFirstWinsAndExpiry(t *testing.T) {
 	}
 	status, _, err = s.ApplyDecision("apv_old", daemonID, "approved", testNow+11)
 	if err != nil || status != wire.AckExpired {
-		t.Fatalf("过期 status=%v err=%v", status, err)
+		t.Fatalf("expired status=%v err=%v", status, err)
 	}
 }
 
@@ -241,7 +241,7 @@ func TestUndeliveredDecisions(t *testing.T) {
 	}
 	items, _ = s.UndeliveredDecisions(daemonID, testNow+3)
 	if len(items) != 0 {
-		t.Fatalf("已送达仍返回: %+v", items)
+		t.Fatalf("delivered still returned: %+v", items)
 	}
 }
 
@@ -266,23 +266,23 @@ func TestRestartPersists(t *testing.T) {
 	}
 	defer s2.Close()
 	if _, err := s2.Daemon(daemonID); err != nil {
-		t.Fatalf("重启后 daemon 丢失: %v", err)
+		t.Fatalf("daemon lost after restart: %v", err)
 	}
 	events, _, err := s2.InboxSince(daemonID, 0, 0, 10)
 	if err != nil || len(events) != 1 {
-		t.Fatalf("重启后事件丢失: %+v err=%v", events, err)
+		t.Fatalf("events lost after restart: %+v err=%v", events, err)
 	}
 }
 
 func TestParseTier(t *testing.T) {
 	if tier, ok := ParseTier(""); !ok || tier != TierFree {
-		t.Fatalf("空值应为 free: %q %v", tier, ok)
+		t.Fatalf("empty should be free: %q %v", tier, ok)
 	}
 	if tier, ok := ParseTier(" PRO "); !ok || tier != TierPro {
-		t.Fatalf("大小写与空白应容忍: %q %v", tier, ok)
+		t.Fatalf("case and whitespace should be tolerated: %q %v", tier, ok)
 	}
 	if _, ok := ParseTier("enterprise"); ok {
-		t.Fatal("未识别档位应拒绝")
+		t.Fatal("unrecognized tier should be rejected")
 	}
 }
 
@@ -325,7 +325,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 		t.Fatal(err)
 	}
 	if d.Tier != TierFree || d.LastSeenAt != createdAt {
-		t.Fatalf("迁移回填失败: tier=%q last_seen=%d want free/%d", d.Tier, d.LastSeenAt, createdAt)
+		t.Fatalf("migration backfill failed: tier=%q last_seen=%d want free/%d", d.Tier, d.LastSeenAt, createdAt)
 	}
 	if err := s.Close(); err != nil {
 		t.Fatal(err)
@@ -338,7 +338,7 @@ func TestMigrateV1ToV2(t *testing.T) {
 	}
 	defer s2.Close()
 	if d, err = s2.Daemon("dd_old000000"); err != nil || d.LastSeenAt != createdAt {
-		t.Fatalf("二次打开应幂等: %+v %v", d, err)
+		t.Fatalf("second open should be idempotent: %+v %v", d, err)
 	}
 }
 
@@ -348,17 +348,17 @@ func TestPairWritesTierAndTouchDaemon(t *testing.T) {
 	seedPairing(t, s, code, "dd_0123456789abcdef0123456789abcdef")
 	daemon, _ := pairDeviceTier(t, s, code, TierPro)
 	if daemon.Tier != TierPro {
-		t.Fatalf("档位应写入 daemon: %q", daemon.Tier)
+		t.Fatalf("tier should be written to daemon: %q", daemon.Tier)
 	}
 	d, err := s.Daemon(daemon.ID)
 	if err != nil || d.Tier != TierPro {
-		t.Fatalf("档位未落盘: %+v %v", d, err)
+		t.Fatalf("tier not persisted: %+v %v", d, err)
 	}
 	if err := s.TouchDaemon(daemon.ID, testNow+100); err != nil {
 		t.Fatal(err)
 	}
 	if d, _ = s.Daemon(daemon.ID); d.LastSeenAt != testNow+100 {
-		t.Fatalf("LastSeenAt 未刷新: %d", d.LastSeenAt)
+		t.Fatalf("LastSeenAt not refreshed: %d", d.LastSeenAt)
 	}
 }
 
@@ -374,11 +374,11 @@ func TestSetDaemonTier(t *testing.T) {
 	}
 	d, err := s.Daemon(daemon.ID)
 	if err != nil || d.Tier != TierPro || d.LastSeenAt != testNow+200 {
-		t.Fatalf("改档未落盘: %+v err=%v", d, err)
+		t.Fatalf("tier change not persisted: %+v err=%v", d, err)
 	}
 	// 不存在的 daemon 报 NotFound,不静默。
 	if err := s.SetDaemonTier("dd_ff", TierFree, testNow); err != ErrNotFound {
-		t.Fatalf("未知 daemon 应 NotFound: %v", err)
+		t.Fatalf("unknown daemon should be NotFound: %v", err)
 	}
 }
 
@@ -393,7 +393,7 @@ func TestUpdateDeviceAPNSToken(t *testing.T) {
 	}
 	d, err := s.Device(device.ID)
 	if err != nil || d.APNSToken != newToken || d.LastSeenAt != testNow+50 {
-		t.Fatalf("token 未更新: %+v %v", d, err)
+		t.Fatalf("token not updated: %+v %v", d, err)
 	}
 }
 
@@ -412,10 +412,10 @@ func TestDeleteDeviceRemovesLATokens(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.Device(device.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("device 应已删除: %v", err)
+		t.Fatalf("device should be deleted: %v", err)
 	}
 	if toks, _ := s.LATokensForDaemon(daemonID); len(toks) != 0 {
-		t.Fatalf("LA token 应级联删除: %d", len(toks))
+		t.Fatalf("LA tokens should be cascade-deleted: %d", len(toks))
 	}
 }
 
@@ -446,22 +446,22 @@ func TestDeleteDaemonCascade(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := s.Daemon(daemonID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("daemon 应已删除: %v", err)
+		t.Fatalf("daemon should be deleted: %v", err)
 	}
 	if _, err := s.Device(device.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("device 应级联删除: %v", err)
+		t.Fatalf("device should be cascade-deleted: %v", err)
 	}
 	if toks, _ := s.LATokensForDaemon(daemonID); len(toks) != 0 {
-		t.Fatalf("LA token 应级联删除: %d", len(toks))
+		t.Fatalf("LA tokens should be cascade-deleted: %d", len(toks))
 	}
 	if events, _, _ := s.InboxSince(daemonID, 0, 0, 10); len(events) != 0 {
-		t.Fatalf("收件箱应级联删除: %+v", events)
+		t.Fatalf("inbox should be cascade-deleted: %+v", events)
 	}
 	if items, _ := s.PendingForDaemon(daemonID, testNow); len(items) != 0 {
-		t.Fatalf("pending 应级联删除: %+v", items)
+		t.Fatalf("pending should be cascade-deleted: %+v", items)
 	}
 	if _, err := s.GetPending("apv_1"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("pending 记录应级联删除: %v", err)
+		t.Fatalf("pending record should be cascade-deleted: %v", err)
 	}
 }
 
@@ -488,17 +488,17 @@ func TestCleanupIdentities(t *testing.T) {
 		t.Fatalf("removed=(%d,%d) want (1,0)", removedDaemons, removedDevices)
 	}
 	if _, err := s.Daemon(staleID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("超期 daemon 应被清理: %v", err)
+		t.Fatalf("stale daemon should be cleaned up: %v", err)
 	}
 	if _, err := s.Device(staleDev.ID); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("超期 daemon 的 device 应级联删除: %v", err)
+		t.Fatalf("device of stale daemon should be cascade-deleted: %v", err)
 	}
 	if _, err := s.Daemon(freshID); err != nil {
-		t.Fatalf("活跃 daemon 不应被清理: %v", err)
+		t.Fatalf("active daemon should not be cleaned up: %v", err)
 	}
 
 	// TTL=0 全禁用,零操作。
 	if n, m, err := s.CleanupIdentities(fresh+10*day, 0, 0); err != nil || n != 0 || m != 0 {
-		t.Fatalf("禁用时应零操作: (%d,%d) %v", n, m, err)
+		t.Fatalf("should be a no-op when disabled: (%d,%d) %v", n, m, err)
 	}
 }

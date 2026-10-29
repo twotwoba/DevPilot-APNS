@@ -62,20 +62,20 @@ func run(args []string) int {
 		usage()
 		return 0
 	default:
-		fmt.Fprintf(os.Stderr, "未知命令: %s\n\n", cmd)
+		fmt.Fprintf(os.Stderr, "unknown command: %s\n\n", cmd)
 		usage()
 		return 2
 	}
 }
 
 func usage() {
-	fmt.Fprint(os.Stderr, `devpilot-relay —— DevPilot 云端推送中继
+	fmt.Fprint(os.Stderr, `devpilot-relay - DevPilot cloud push relay
 
-用法:
-  devpilot-relay serve       启动 relay（环境变量配置）
-  devpilot-relay healthcheck 检查 /healthz（容器用）
-  devpilot-relay snapshot    导出 bbolt 快照 [--out PATH]
-  devpilot-relay test-push   真机验证触发工具
+Usage:
+  devpilot-relay serve       start the relay (configured via environment variables)
+  devpilot-relay healthcheck check /healthz (for container HEALTHCHECK)
+  devpilot-relay snapshot    export a bbolt snapshot [--out PATH]
+  devpilot-relay test-push   send a test push to a real device
                              [--relay URL] [--credential dpd_...] [--kind approval|task]
   devpilot-relay version
 `)
@@ -95,12 +95,12 @@ func runServe(args []string) int {
 	now := time.Now
 
 	if err := os.MkdirAll(cfg.DataDir, 0o700); err != nil {
-		logger.Error("创建数据目录失败", "err", err)
+		logger.Error("failed to create data directory", "err", err)
 		return 1
 	}
 	st, err := store.Open(filepath.Join(cfg.DataDir, "relay.db"))
 	if err != nil {
-		logger.Error("打开数据库失败", "err", err)
+		logger.Error("failed to open database", "err", err)
 		return 1
 	}
 	defer st.Close()
@@ -117,7 +117,7 @@ func runServe(args []string) int {
 		ExemptApprovals: cfg.QuotaExemptApprovals,
 		Now:             now,
 	})
-	logger.Info("配额参数", "rate_free", cfg.RateEventFree, "rate_pro", cfg.RateEventPro,
+	logger.Info("quota settings", "rate_free", cfg.RateEventFree, "rate_pro", cfg.RateEventPro,
 		"window", cfg.RateEventWindow.String(), "daily_free", cfg.QuotaDailyFree,
 		"daily_pro", cfg.QuotaDailyPro, "exempt_approvals", cfg.QuotaExemptApprovals)
 
@@ -137,16 +137,16 @@ func runServe(args []string) int {
 			Mock:              cfg.APNSMock,
 		})
 		if err != nil {
-			logger.Error("初始化 APNs 客户端失败", "err", err)
+			logger.Error("failed to initialize APNs client", "err", err)
 			return 1
 		}
 		notifier = deliver.New(deliver.Config{
 			Store: st, Pusher: client, Metrics: m, Logger: logger, Quota: eng, Now: now,
 		})
 		apnsOK = client.Healthy
-		logger.Info("APNs 已启用", "mock", cfg.APNSMock, "environment", cfg.APNSEnvironment)
+		logger.Info("APNs enabled", "mock", cfg.APNSMock, "environment", cfg.APNSEnvironment)
 	} else {
-		logger.Warn("APNs 未配置，审批仅走 WSS（App 后台可能收不到通知）")
+		logger.Warn("APNs not configured; approvals delivered over WSS only (app may miss notifications while in background)")
 	}
 
 	hub := wss.New(wss.Config{
@@ -185,7 +185,7 @@ func runServe(args []string) int {
 		MetricsToken:      cfg.MetricsToken,
 	})
 	if err != nil {
-		logger.Error("初始化 server 失败", "err", err)
+		logger.Error("failed to initialize server", "err", err)
 		return 1
 	}
 
@@ -209,7 +209,7 @@ func runServe(args []string) int {
 				return
 			case <-ticker.C:
 				if err := st.Cleanup(now().Unix()); err != nil {
-					logger.Warn("清理过期数据失败", "err", err)
+					logger.Warn("failed to clean up expired data", "err", err)
 				}
 			}
 		}
@@ -229,11 +229,11 @@ func runServe(args []string) int {
 				case <-ticker.C:
 					removedD, removedDev, err := st.CleanupIdentities(now().Unix(), daemonTTL, deviceTTL)
 					if err != nil {
-						logger.Warn("身份 TTL 清理失败", "err", err)
+						logger.Warn("identity TTL cleanup failed", "err", err)
 						continue
 					}
 					if removedD > 0 || removedDev > 0 {
-						logger.Info("身份 TTL 清理完成", "daemons", removedD, "devices", removedDev)
+						logger.Info("identity TTL cleanup complete", "daemons", removedD, "devices", removedDev)
 					}
 				}
 			}
@@ -242,7 +242,7 @@ func runServe(args []string) int {
 
 	errCh := make(chan error, 1)
 	go func() {
-		logger.Info("relay 启动", "listen", cfg.ListenAddr, "data_dir", cfg.DataDir,
+		logger.Info("relay started", "listen", cfg.ListenAddr, "data_dir", cfg.DataDir,
 			"apns_enabled", cfg.APNSEnabled())
 		errCh <- httpSrv.ListenAndServe()
 	}()
@@ -250,15 +250,15 @@ func runServe(args []string) int {
 	select {
 	case err := <-errCh:
 		if err != nil && err != http.ErrServerClosed {
-			logger.Error("relay 异常退出", "err", err)
+			logger.Error("relay exited unexpectedly", "err", err)
 			return 1
 		}
 	case <-ctx.Done():
-		logger.Info("收到退出信号，开始优雅关闭")
+		logger.Info("shutdown signal received, starting graceful shutdown")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := httpSrv.Shutdown(shutdownCtx); err != nil {
-			logger.Warn("优雅关闭超时", "err", err)
+			logger.Warn("graceful shutdown timed out", "err", err)
 		}
 	}
 	return 0
@@ -274,12 +274,12 @@ func runHealthcheck() int {
 	client := &http.Client{Timeout: 3 * time.Second}
 	resp, err := client.Get(url)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "健康检查失败: %v\n", err)
+		fmt.Fprintf(os.Stderr, "healthcheck failed: %v\n", err)
 		return 1
 	}
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
-		fmt.Fprintf(os.Stderr, "健康检查 HTTP %d\n", resp.StatusCode)
+		fmt.Fprintf(os.Stderr, "healthcheck returned HTTP %d\n", resp.StatusCode)
 		return 1
 	}
 	return 0
@@ -287,7 +287,7 @@ func runHealthcheck() int {
 
 func runSnapshot(args []string) int {
 	fs := flag.NewFlagSet("snapshot", flag.ContinueOnError)
-	out := fs.String("out", "", "快照输出路径")
+	out := fs.String("out", "", "snapshot output path")
 	if err := fs.Parse(args); err != nil {
 		return 2
 	}

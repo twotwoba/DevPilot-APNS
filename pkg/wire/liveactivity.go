@@ -51,19 +51,19 @@ func ContentStateFor(env Envelope) ContentState {
 func statusFor(t EventType) (icon, text string, alert bool) {
 	switch t {
 	case EventSessionStarted:
-		return "play.circle.fill", "运行中", false
+		return "play.circle.fill", "Running", false
 	case EventToolRunning:
-		return "gearshape.fill", "运行中", false
+		return "gearshape.fill", "Running", false
 	case EventToolFinished:
-		return "checkmark.circle", "运行中", false
+		return "checkmark.circle", "Running", false
 	case EventApprovalRequired:
-		return "exclamationmark.triangle.fill", "等待审批", true
+		return "exclamationmark.triangle.fill", "Waiting for approval", true
 	case EventTaskComplete:
-		return "checkmark.seal.fill", "已完成", false
+		return "checkmark.seal.fill", "Completed", false
 	case EventSessionEnded:
-		return "xmark.circle", "已结束", false
+		return "xmark.circle", "Ended", false
 	default:
-		return "circle", "运行中", false
+		return "circle", "Running", false
 	}
 }
 

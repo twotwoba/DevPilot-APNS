@@ -58,7 +58,7 @@ func TestVectorsRoundTrip(t *testing.T) {
 // TestDecodeRejectsUnsupportedVersion 确认版本不匹配时直接拒绝。
 func TestDecodeRejectsUnsupportedVersion(t *testing.T) {
 	_, err := Decode([]byte(`{"v":2,"kind":"event"}`))
-	if err == nil || !strings.Contains(err.Error(), "协议版本") {
+	if err == nil || !strings.Contains(err.Error(), "unsupported protocol version") {
 		t.Fatalf("期望版本错误，实际 %v", err)
 	}
 }
@@ -147,7 +147,7 @@ func TestContentStateUsesEpochSeconds(t *testing.T) {
 	if cs.UpdatedAt != 1760770000 {
 		t.Fatalf("updatedAt 必须是 Unix 秒，实际 %d", cs.UpdatedAt)
 	}
-	if !cs.IsAlert || cs.StatusText != "等待审批" {
+	if !cs.IsAlert || cs.StatusText != "Waiting for approval" {
 		t.Fatalf("审批态映射不符: %+v", cs)
 	}
 

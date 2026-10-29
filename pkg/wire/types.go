@@ -258,28 +258,28 @@ type LATokenAck struct {
 // Validate 校验事件包封。
 func (e *Envelope) Validate() error {
 	if e.V != Version {
-		return fmt.Errorf("wire: 不支持的协议版本 %d（期望 %d）", e.V, Version)
+		return fmt.Errorf("wire: unsupported protocol version %d (want %d)", e.V, Version)
 	}
 	if e.Kind != KindEvent {
-		return fmt.Errorf("wire: envelope kind 必须是 event，实际 %q", e.Kind)
+		return fmt.Errorf("wire: envelope kind must be event, got %q", e.Kind)
 	}
 	if e.MsgID == "" || e.EventID == "" {
-		return fmt.Errorf("wire: msg_id 与 event_id 不能为空")
+		return fmt.Errorf("wire: msg_id and event_id must not be empty")
 	}
 	if !e.Type.Valid() {
-		return fmt.Errorf("wire: 未知事件类型 %q", e.Type)
+		return fmt.Errorf("wire: unknown event type %q", e.Type)
 	}
 	if !e.Agent.Valid() {
-		return fmt.Errorf("wire: 未知 agent %q", e.Agent)
+		return fmt.Errorf("wire: unknown agent %q", e.Agent)
 	}
 	if e.DaemonID == "" || e.SessionID == "" {
-		return fmt.Errorf("wire: daemon_id 与 session_id 不能为空")
+		return fmt.Errorf("wire: daemon_id and session_id must not be empty")
 	}
 	if e.TS <= 0 {
-		return fmt.Errorf("wire: ts 必须为正的 Unix 秒")
+		return fmt.Errorf("wire: ts must be a positive unix timestamp")
 	}
 	if e.Type == EventApprovalRequired && e.ApprovalID == "" {
-		return fmt.Errorf("wire: approval_required 必须携带 approval_id")
+		return fmt.Errorf("wire: approval_required requires approval_id")
 	}
 	return nil
 }
@@ -287,19 +287,19 @@ func (e *Envelope) Validate() error {
 // Validate 校验审批决策。
 func (d *Decision) Validate() error {
 	if d.V != Version {
-		return fmt.Errorf("wire: 不支持的协议版本 %d", d.V)
+		return fmt.Errorf("wire: unsupported protocol version %d", d.V)
 	}
 	if d.Kind != KindDecision {
-		return fmt.Errorf("wire: decision kind 必须是 decision")
+		return fmt.Errorf("wire: decision kind must be decision")
 	}
 	if d.MsgID == "" || d.ApprovalID == "" {
-		return fmt.Errorf("wire: msg_id 与 approval_id 不能为空")
+		return fmt.Errorf("wire: msg_id and approval_id must not be empty")
 	}
 	if !d.Decision.Valid() {
-		return fmt.Errorf("wire: 未知决策 %q", d.Decision)
+		return fmt.Errorf("wire: unknown decision %q", d.Decision)
 	}
 	if d.TS <= 0 {
-		return fmt.Errorf("wire: ts 必须为正的 Unix 秒")
+		return fmt.Errorf("wire: ts must be a positive unix timestamp")
 	}
 	return nil
 }
@@ -307,19 +307,19 @@ func (d *Decision) Validate() error {
 // Validate 校验 Hello。
 func (h *Hello) Validate() error {
 	if h.V != Version {
-		return fmt.Errorf("wire: 不支持的协议版本 %d", h.V)
+		return fmt.Errorf("wire: unsupported protocol version %d", h.V)
 	}
 	if h.Kind != KindHello {
-		return fmt.Errorf("wire: hello kind 必须是 hello")
+		return fmt.Errorf("wire: hello kind must be hello")
 	}
 	if h.Role != RoleDaemon && h.Role != RoleApp {
-		return fmt.Errorf("wire: 未知角色 %q", h.Role)
+		return fmt.Errorf("wire: unknown role %q", h.Role)
 	}
 	if h.Role == RoleDaemon && h.DaemonID == "" {
-		return fmt.Errorf("wire: daemon 角色必须携带 daemon_id")
+		return fmt.Errorf("wire: daemon role requires daemon_id")
 	}
 	if h.Role == RoleApp && h.DeviceID == "" {
-		return fmt.Errorf("wire: app 角色必须携带 device_id")
+		return fmt.Errorf("wire: app role requires device_id")
 	}
 	return nil
 }
@@ -327,10 +327,10 @@ func (h *Hello) Validate() error {
 // Validate 校验重同步请求。
 func (r *Resync) Validate() error {
 	if r.V != Version || r.Kind != KindResync {
-		return fmt.Errorf("wire: 非法的 resync 消息")
+		return fmt.Errorf("wire: invalid resync message")
 	}
 	if r.MsgID == "" {
-		return fmt.Errorf("wire: resync 缺少 msg_id")
+		return fmt.Errorf("wire: resync missing msg_id")
 	}
 	return nil
 }
@@ -338,16 +338,16 @@ func (r *Resync) Validate() error {
 // Validate 校验 Live Activity token 上报。
 func (l *LAToken) Validate() error {
 	if l.V != Version || l.Kind != KindLAToken {
-		return fmt.Errorf("wire: 非法的 la_token 消息")
+		return fmt.Errorf("wire: invalid la_token message")
 	}
 	if l.MsgID == "" || l.DaemonID == "" || l.SessionID == "" || l.PushToken == "" {
-		return fmt.Errorf("wire: la_token 字段不完整")
+		return fmt.Errorf("wire: la_token is missing required fields")
 	}
 	switch l.Event {
 	case LAStart, LAUpdate, LAEnd:
 		return nil
 	default:
-		return fmt.Errorf("wire: 未知 la event %q", l.Event)
+		return fmt.Errorf("wire: unknown la event %q", l.Event)
 	}
 }
 

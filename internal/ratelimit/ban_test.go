@@ -27,11 +27,11 @@ func TestBanThresholdAndExpiry(t *testing.T) {
 		b.RecordFailure("1.2.3.4")
 	}
 	if b.Banned("1.2.3.4") {
-		t.Fatal("未达阈值不应封禁")
+		t.Fatal("below threshold should not ban")
 	}
 	b.RecordFailure("1.2.3.4")
 	if !b.Banned("1.2.3.4") {
-		t.Fatal("达阈值应封禁")
+		t.Fatal("threshold reached should ban")
 	}
 	if b.Active() != 1 {
 		t.Fatalf("Active = %d", b.Active())
@@ -39,14 +39,14 @@ func TestBanThresholdAndExpiry(t *testing.T) {
 	// TTL 内持续封禁;过期后解除。
 	clk.Advance(23 * time.Hour)
 	if !b.Banned("1.2.3.4") {
-		t.Fatal("TTL 内应仍封禁")
+		t.Fatal("should stay banned within TTL")
 	}
 	clk.Advance(2 * time.Hour)
 	if b.Banned("1.2.3.4") {
-		t.Fatal("TTL 过期应解除")
+		t.Fatal("ban should lift after TTL")
 	}
 	if b.Active() != 0 {
-		t.Fatalf("过期后 Active = %d", b.Active())
+		t.Fatalf("Active after expiry = %d", b.Active())
 	}
 }
 
@@ -58,7 +58,7 @@ func TestBanWindowReset(t *testing.T) {
 	clk.Advance(6 * time.Minute)
 	b.RecordFailure("1.2.3.4")
 	if b.Banned("1.2.3.4") {
-		t.Fatal("出窗重置后不应封禁")
+		t.Fatal("should not ban after window reset")
 	}
 }
 
@@ -66,11 +66,11 @@ func TestBanDisabled(t *testing.T) {
 	b, _ := newBan(t, func(c *BanConfig) { c.Threshold = 0 })
 	b.RecordFailure("1.2.3.4")
 	if b.Banned("1.2.3.4") || b.Enabled() {
-		t.Fatal("阈值为 0 应禁用")
+		t.Fatal("zero threshold should disable")
 	}
 	var nilBan *BanManager
 	if nilBan.Enabled() || nilBan.Active() != 0 {
-		t.Fatal("nil 管理器应安全禁用")
+		t.Fatal("nil manager should be safely disabled")
 	}
 }
 
@@ -92,10 +92,10 @@ func TestAggregateKey(t *testing.T) {
 	a := AggregateKey("2001:db8:1a2b:3c4d::1")
 	b := AggregateKey("2001:db8:1a2b:3c4d:ffff:ffff:ffff:ffff")
 	if a != b {
-		t.Fatalf("同 /64 段应同 key: %q vs %q", a, b)
+		t.Fatalf("same /64 should share key: %q vs %q", a, b)
 	}
 	// 不同 /64 段应不同 key。
 	if AggregateKey("2001:db8:1a2b:3c4e::1") == a {
-		t.Fatal("不同 /64 段不应同 key")
+		t.Fatal("different /64 should not share key")
 	}
 }

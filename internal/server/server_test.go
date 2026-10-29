@@ -113,18 +113,18 @@ func (e *testEnv) registerAndPair(t *testing.T) {
 	resp, body := e.post(t, "/v1/pairing/sessions", map[string]any{
 		"code": testCode, "daemon_id": testDaemonID,
 		"daemon_cred_hash": pairing.SecretHash(testSecret),
-		"daemon_name":      "Eric 的 MacBook",
+		"daemon_name":      "Eric's MacBook",
 		"expires_at":       time.Now().Add(10 * time.Minute).Unix(),
 	}, "")
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("注册配对会话 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("register pairing session HTTP %d: %s", resp.StatusCode, body)
 	}
 
 	resp, body = e.post(t, "/v1/pair", map[string]any{
 		"code": testCode, "apns_token": "fake-token", "device_name": "iPhone",
 	}, "")
 	if resp.StatusCode != http.StatusCreated {
-		t.Fatalf("配对 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("pair HTTP %d: %s", resp.StatusCode, body)
 	}
 	var paired struct {
 		DeviceID         string `json:"device_id"`
@@ -134,7 +134,7 @@ func (e *testEnv) registerAndPair(t *testing.T) {
 		t.Fatal(err)
 	}
 	if paired.DeviceID == "" || paired.DeviceCredential == "" {
-		t.Fatalf("配对响应缺少字段: %s", body)
+		t.Fatalf("pair response missing fields: %s", body)
 	}
 	e.deviceID = paired.DeviceID
 	e.deviceCr = paired.DeviceCredential
@@ -156,7 +156,7 @@ func dial(t *testing.T, ts *httptest.Server, path, token string) *websocket.Conn
 		if resp != nil {
 			status = resp.StatusCode
 		}
-		t.Fatalf("WebSocket 连接失败（HTTP %d）: %v", status, err)
+		t.Fatalf("websocket dial failed (HTTP %d): %v", status, err)
 	}
 	t.Cleanup(func() { c.CloseNow() })
 	return c
@@ -171,7 +171,7 @@ func send(t *testing.T, c *websocket.Conn, v any) {
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := c.Write(ctx, websocket.MessageText, data); err != nil {
-		t.Fatalf("发送失败: %v", err)
+		t.Fatalf("send failed: %v", err)
 	}
 }
 
@@ -181,11 +181,11 @@ func recv(t *testing.T, c *websocket.Conn) any {
 	defer cancel()
 	_, data, err := c.Read(ctx)
 	if err != nil {
-		t.Fatalf("读取失败: %v", err)
+		t.Fatalf("read failed: %v", err)
 	}
 	msg, err := wire.Decode(data)
 	if err != nil {
-		t.Fatalf("解码失败: %v (%s)", err, data)
+		t.Fatalf("decode failed: %v (%s)", err, data)
 	}
 	return msg
 }
@@ -194,7 +194,7 @@ func hello(t *testing.T, c *websocket.Conn, h wire.Hello) {
 	t.Helper()
 	send(t, c, h)
 	if _, ok := recv(t, c).(*wire.HelloAck); !ok {
-		t.Fatal("缺少 hello_ack")
+		t.Fatal("missing hello_ack")
 	}
 }
 
@@ -228,7 +228,7 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	}
 	live, ok := recv(t, app).(*wire.Envelope)
 	if !ok || live.EventID != "ev_1" || live.Seq == 0 {
-		t.Fatalf("App 收到的事件 = %+v", live)
+		t.Fatalf("app received event = %+v", live)
 	}
 
 	// 手机允许。
@@ -238,11 +238,11 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	})
 	d, ok := recv(t, daemon).(*wire.Decision)
 	if !ok || d.ApprovalID != approvalID || d.Decision != wire.DecisionAllow {
-		t.Fatalf("daemon 收到的决策 = %+v", d)
+		t.Fatalf("daemon received decision = %+v", d)
 	}
 	ack, ok = recv(t, app).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAccepted {
-		t.Fatalf("决策 ack = %+v", ack)
+		t.Fatalf("decision ack = %+v", ack)
 	}
 
 	// daemon 确认收到决策后不再补发。
@@ -260,7 +260,7 @@ func TestPairAndApprovalFlow(t *testing.T) {
 			break
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("决策未标记送达: %+v", items)
+			t.Fatalf("decision not marked delivered: %+v", items)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -269,10 +269,10 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	send(t, app, wire.Resync{V: wire.Version, Kind: wire.KindResync, MsgID: "m_rs1"})
 	rs, ok := recv(t, app).(*wire.ResyncResult)
 	if !ok {
-		t.Fatal("缺少 resync_result")
+		t.Fatal("missing resync_result")
 	}
 	if len(rs.Pending) != 0 {
-		t.Fatalf("已决策审批仍出现在 pending: %+v", rs.Pending)
+		t.Fatalf("decided approval still in pending: %+v", rs.Pending)
 	}
 	if len(rs.Events) != 1 || rs.Events[0].EventID != "ev_1" {
 		t.Fatalf("resync events = %+v", rs.Events)
@@ -282,12 +282,12 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	send(t, daemon, env1)
 	ack, ok = recv(t, daemon).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAccepted {
-		t.Fatalf("重复事件 ack = %+v", ack)
+		t.Fatalf("duplicate event ack = %+v", ack)
 	}
 	send(t, app, wire.Resync{V: wire.Version, Kind: wire.KindResync, MsgID: "m_rs2"})
 	rs, _ = recv(t, app).(*wire.ResyncResult)
 	if len(rs.Events) != 1 {
-		t.Fatalf("重复事件进入了收件箱: %d", len(rs.Events))
+		t.Fatalf("duplicate event entered inbox: %d", len(rs.Events))
 	}
 
 	// 重复决策 first-wins。
@@ -297,11 +297,11 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	})
 	ack, ok = recv(t, app).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAlreadyDecided {
-		t.Fatalf("重复决策 ack = %+v", ack)
+		t.Fatalf("duplicate decision ack = %+v", ack)
 	}
 	p, err := env.store.GetPending(approvalID)
 	if err != nil || p.Status != "approved" {
-		t.Fatalf("决策被覆盖: %+v err=%v", p, err)
+		t.Fatalf("decision was overwritten: %+v err=%v", p, err)
 	}
 }
 
@@ -351,7 +351,7 @@ func TestApprovalFansOutToNotifier(t *testing.T) {
 			t.Fatalf("env = %+v", got.env)
 		}
 	case <-time.After(2 * time.Second):
-		t.Fatal("Notifier 未被调用")
+		t.Fatal("notifier not called")
 	}
 }
 
@@ -399,7 +399,7 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 	})
 	d, ok := recv(t, daemon).(*wire.Decision)
 	if !ok || d.ApprovalID != approvalID || d.Decision != wire.DecisionDeny {
-		t.Fatalf("补发的决策 = %+v", d)
+		t.Fatalf("replayed decision = %+v", d)
 	}
 
 	// daemon ack 之后不再重放。
@@ -417,7 +417,7 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 			return
 		}
 		if time.Now().After(deadline) {
-			t.Fatalf("决策未被标记送达: %+v", items)
+			t.Fatalf("decision not marked delivered: %+v", items)
 		}
 		time.Sleep(20 * time.Millisecond)
 	}
@@ -431,10 +431,10 @@ func TestUnpairedDaemonRejected(t *testing.T) {
 		HTTPHeader: http.Header{"Authorization": {"Bearer dpd_dd_ffffffffffffffffffffffffffffffff_" + strings.Repeat("a", 32)}},
 	})
 	if err == nil {
-		t.Fatal("未注册 daemon 不应连上")
+		t.Fatal("unregistered daemon should not connect")
 	}
 	if resp == nil || resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("HTTP 状态 = %+v", resp)
+		t.Fatalf("HTTP status = %+v", resp)
 	}
 }
 
@@ -443,7 +443,7 @@ func TestPairingCodeOneTime(t *testing.T) {
 	env.registerAndPair(t)
 	resp, body := env.post(t, "/v1/pair", map[string]any{"code": testCode}, "")
 	if resp.StatusCode != http.StatusNotFound {
-		t.Fatalf("重复兑换 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("reuse code HTTP %d: %s", resp.StatusCode, body)
 	}
 }
 
@@ -455,24 +455,24 @@ func TestPairingRotationRequiresAuth(t *testing.T) {
 		"daemon_cred_hash": pairing.SecretHash(seedSecret), "daemon_name": "mac",
 	}
 	if resp, b := env.post(t, "/v1/pairing/sessions", body, ""); resp.StatusCode != http.StatusCreated {
-		t.Fatalf("首次注册 HTTP %d: %s", resp.StatusCode, b)
+		t.Fatalf("first registration HTTP %d: %s", resp.StatusCode, b)
 	}
 	// 无旧凭据不能轮换。
 	body["code"] = "ZZZZZZZZZZZZZZZZZZZZZZZZZZ"
 	body["daemon_cred_hash"] = pairing.SecretHash("newnewnewnewnewnewnewnewnewnewnewnew")
 	if resp, b := env.post(t, "/v1/pairing/sessions", body, ""); resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("未鉴权轮换应 401，实际 %d: %s", resp.StatusCode, b)
+		t.Fatalf("unauthenticated rotation should 401, got %d: %s", resp.StatusCode, b)
 	}
 	// 持有旧凭据可以轮换。
 	oldCred := pairing.DaemonCredential(testDaemonID, seedSecret)
 	if resp, b := env.post(t, "/v1/pairing/sessions", body, oldCred); resp.StatusCode != http.StatusCreated {
-		t.Fatalf("凭据轮换 HTTP %d: %s", resp.StatusCode, b)
+		t.Fatalf("credential rotation HTTP %d: %s", resp.StatusCode, b)
 	}
 	if _, ok := env.store.VerifyDaemon(testDaemonID, "newnewnewnewnewnewnewnewnewnewnewnew"); !ok {
-		t.Fatal("新凭据未生效")
+		t.Fatal("new credential not active")
 	}
 	if _, ok := env.store.VerifyDaemon(testDaemonID, seedSecret); ok {
-		t.Fatal("旧凭据仍然有效")
+		t.Fatal("old credential still valid")
 	}
 }
 
@@ -512,11 +512,11 @@ func TestLATokenREST(t *testing.T) {
 		"daemon_id": testDaemonID, "session_id": "sess_1", "event": "end",
 	}, env.deviceCr)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("结束 LA token HTTP %d", resp.StatusCode)
+		t.Fatalf("end LA token HTTP %d", resp.StatusCode)
 	}
 	tokens, _ = env.store.LATokensForDaemon(testDaemonID)
 	if len(tokens) != 0 {
-		t.Fatal("LA token 未删除")
+		t.Fatal("LA token not deleted")
 	}
 }
 
@@ -549,24 +549,24 @@ func TestEventRateLimitAck(t *testing.T) {
 		send(t, daemon, mk(i, wire.EventToolRunning))
 		ack, ok := recv(t, daemon).(*wire.Ack)
 		if !ok || ack.Status != wire.AckAccepted {
-			t.Fatalf("事件 %d 应放行: %+v", i, ack)
+			t.Fatalf("event %d should be accepted: %+v", i, ack)
 		}
 	}
 	send(t, daemon, mk(3, wire.EventToolRunning))
 	ack, ok := recv(t, daemon).(*wire.Ack)
 	if !ok || ack.Status != wire.AckRejected {
-		t.Fatalf("第 3 个事件应被速率闸拒绝: %+v", ack)
+		t.Fatalf("event 3 should be rejected by rate limit: %+v", ack)
 	}
 	// 审批类豁免速率闸。
 	send(t, daemon, mk(4, wire.EventApprovalRequired))
 	ack, ok = recv(t, daemon).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAccepted {
-		t.Fatalf("审批事件应豁免放行: %+v", ack)
+		t.Fatalf("approval event should be exempt and accepted: %+v", ack)
 	}
 	// 被拒事件不落库:收件箱只有 2 条遥测 + 1 条审批。
 	events, _, err := env.store.InboxSince(testDaemonID, 0, 0, 10)
 	if err != nil || len(events) != 3 {
-		t.Fatalf("收件箱应有 3 条: %d err=%v", len(events), err)
+		t.Fatalf("inbox should have 3 events: %d err=%v", len(events), err)
 	}
 }
 
@@ -577,20 +577,20 @@ func TestDeviceLifecycle(t *testing.T) {
 
 	resp, body := env.post(t, "/v1/devices/token", map[string]any{"apns_token": "new-token-xyz"}, env.deviceCr)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("token 重报 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("token re-report HTTP %d: %s", resp.StatusCode, body)
 	}
 	dev, err := env.store.Device(env.deviceID)
 	if err != nil || dev.APNSToken != "new-token-xyz" {
-		t.Fatalf("token 未更新: %+v %v", dev, err)
+		t.Fatalf("token not updated: %+v %v", dev, err)
 	}
 	// 无凭据 401;空 token 400。
 	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": "x"}, "")
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("无凭据应 401: %d", resp.StatusCode)
+		t.Fatalf("missing credential should 401: %d", resp.StatusCode)
 	}
 	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": " "}, env.deviceCr)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("空 token 应 400: %d", resp.StatusCode)
+		t.Fatalf("blank token should 400: %d", resp.StatusCode)
 	}
 
 	// 自助解绑:设备与 LA token 级联删除。
@@ -605,10 +605,10 @@ func TestDeviceLifecycle(t *testing.T) {
 	}
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusNoContent {
-		t.Fatalf("解绑 HTTP %d", resp2.StatusCode)
+		t.Fatalf("unbind HTTP %d", resp2.StatusCode)
 	}
 	if _, err := env.store.Device(env.deviceID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("设备应已删除: %v", err)
+		t.Fatalf("device should be deleted: %v", err)
 	}
 }
 
@@ -628,10 +628,10 @@ func TestDeleteDaemonRevokesAll(t *testing.T) {
 	}
 	resp.Body.Close()
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("吊销 HTTP %d", resp.StatusCode)
+		t.Fatalf("revoke HTTP %d", resp.StatusCode)
 	}
 	if _, err := env.store.Daemon(testDaemonID); !errors.Is(err, store.ErrNotFound) {
-		t.Fatalf("daemon 应已级联注销: %v", err)
+		t.Fatalf("daemon should be cascade-revoked: %v", err)
 	}
 	// 设备凭据随之失效。
 	req2, err := http.NewRequest(http.MethodGet, env.ts.URL+"/v1/pending", nil)
@@ -645,7 +645,7 @@ func TestDeleteDaemonRevokesAll(t *testing.T) {
 	}
 	resp2.Body.Close()
 	if resp2.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("吊销后设备凭据应失效: %d", resp2.StatusCode)
+		t.Fatalf("device credential should be invalid after revoke: %d", resp2.StatusCode)
 	}
 	// daemon 凭据同样失效(WS 401)。
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
@@ -654,10 +654,10 @@ func TestDeleteDaemonRevokesAll(t *testing.T) {
 		HTTPHeader: http.Header{"Authorization": {"Bearer " + env.cred}},
 	})
 	if err == nil {
-		t.Fatal("吊销后 WS 应拒绝")
+		t.Fatal("websocket should be rejected after revoke")
 	}
 	if wsResp == nil || wsResp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("吊销后 WS 应 401: %+v", wsResp)
+		t.Fatalf("websocket should 401 after revoke: %+v", wsResp)
 	}
 }
 
@@ -667,7 +667,7 @@ func recvClosed(t *testing.T, c *websocket.Conn) {
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	if _, _, err := c.Read(ctx); err == nil {
-		t.Fatal("连接应已被服务端断开")
+		t.Fatal("connection should have been closed by server")
 	}
 }
 
@@ -685,7 +685,7 @@ func TestDeleteDeviceKicksLiveConn(t *testing.T) {
 
 	resp, body := env.doXFF(t, http.MethodDelete, "/v1/device", nil, env.deviceCr, "")
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("解绑 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("unbind HTTP %d: %s", resp.StatusCode, body)
 	}
 	recvClosed(t, app)
 }
@@ -745,7 +745,7 @@ func TestDeleteDaemonKicksLiveConns(t *testing.T) {
 
 	resp, body := env.doXFF(t, http.MethodDelete, "/v1/daemon", nil, env.cred, "")
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("吊销 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("revoke HTTP %d: %s", resp.StatusCode, body)
 	}
 	recvClosed(t, daemon)
 	recvClosed(t, app)
@@ -768,11 +768,11 @@ func TestDeviceTokenUpdatesTier(t *testing.T) {
 		"apns_token": "tok-1", "tier": "pro",
 	}, env.deviceCr)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("升级 HTTP %d: %s", resp.StatusCode, body)
+		t.Fatalf("upgrade HTTP %d: %s", resp.StatusCode, body)
 	}
 	d, err := env.store.Daemon(testDaemonID)
 	if err != nil || d.Tier != store.TierPro {
-		t.Fatalf("档位未升级: %+v err=%v", d, err)
+		t.Fatalf("tier not upgraded: %+v err=%v", d, err)
 	}
 	// 配额按建连时缓存的 tier 结算,改档必须踢连接促重连。
 	recvClosed(t, daemon)
@@ -787,10 +787,10 @@ func TestDeviceTokenUpdatesTier(t *testing.T) {
 		"apns_token": "tok-2", "tier": "free",
 	}, env.deviceCr)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("降级 HTTP %d", resp.StatusCode)
+		t.Fatalf("downgrade HTTP %d", resp.StatusCode)
 	}
 	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
-		t.Fatalf("档位未降级: %+v err=%v", d, err)
+		t.Fatalf("tier not downgraded: %+v err=%v", d, err)
 	}
 	recvClosed(t, daemon)
 
@@ -804,22 +804,22 @@ func TestDeviceTokenUpdatesTier(t *testing.T) {
 		"apns_token": "tok-3", "tier": "vip",
 	}, env.deviceCr)
 	if resp.StatusCode != http.StatusBadRequest {
-		t.Fatalf("非法档应 400: %d", resp.StatusCode)
+		t.Fatalf("invalid tier should 400: %d", resp.StatusCode)
 	}
 	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
-		t.Fatalf("非法档不应落库: %+v err=%v", d, err)
+		t.Fatalf("invalid tier should not persist: %+v err=%v", d, err)
 	}
 	resp, _ = env.post(t, "/v1/devices/token", map[string]any{"apns_token": "tok-4"}, env.deviceCr)
 	if resp.StatusCode != http.StatusNoContent {
-		t.Fatalf("无 tier 字段应 204: %d", resp.StatusCode)
+		t.Fatalf("missing tier should 204: %d", resp.StatusCode)
 	}
 	if d, err = env.store.Daemon(testDaemonID); err != nil || d.Tier != store.TierFree {
-		t.Fatalf("无 tier 字段不应动档: %+v err=%v", d, err)
+		t.Fatalf("missing tier should not change tier: %+v err=%v", d, err)
 	}
 	// 连接未被踢(合法性校验失败不该殃及在线会话):Ping 应有 Pong 应答。
 	send(t, daemon, wire.Ping{V: wire.Version, Kind: wire.KindPing, TS: time.Now().Unix()})
 	if _, ok := recv(t, daemon).(*wire.Pong); !ok {
-		t.Fatal("无 tier 上报不应断开连接")
+		t.Fatal("report without tier should not close connection")
 	}
 }
 
@@ -864,13 +864,13 @@ func TestRealIP(t *testing.T) {
 		trusted int
 		want    string
 	}{
-		{"直连公网忽略 XFF", "203.0.113.9", "1.2.3.4", 1, "203.0.113.9"},
-		{"未配置信任数忽略 XFF", "10.0.0.2", "1.2.3.4", 0, "10.0.0.2"},
-		{"单级反代取最右", "127.0.0.1", "1.2.3.4", 1, "1.2.3.4"},
-		{"伪造的左侧被忽略", "127.0.0.1", "6.6.6.6, 1.2.3.4", 1, "1.2.3.4"},
-		{"两级可信链取右数第二", "127.0.0.1", "5.5.5.5, 1.2.3.4, 10.0.0.9", 2, "1.2.3.4"},
-		{"XFF 垃圾值回退", "127.0.0.1", "garbage", 1, "127.0.0.1"},
-		{"无端口 RemoteAddr 原样", "203.0.113.9", "", 0, "203.0.113.9"},
+		{"direct public ignores XFF", "203.0.113.9", "1.2.3.4", 1, "203.0.113.9"},
+		{"zero trusted ignores XFF", "10.0.0.2", "1.2.3.4", 0, "10.0.0.2"},
+		{"single proxy takes rightmost", "127.0.0.1", "1.2.3.4", 1, "1.2.3.4"},
+		{"spoofed left entries ignored", "127.0.0.1", "6.6.6.6, 1.2.3.4", 1, "1.2.3.4"},
+		{"two-hop chain takes second from right", "127.0.0.1", "5.5.5.5, 1.2.3.4, 10.0.0.9", 2, "1.2.3.4"},
+		{"garbage XFF falls back", "127.0.0.1", "garbage", 1, "127.0.0.1"},
+		{"portless RemoteAddr passthrough", "203.0.113.9", "", 0, "203.0.113.9"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -891,13 +891,13 @@ func TestBanMiddleware(t *testing.T) {
 		resp, _ := env.doXFF(t, http.MethodPost, "/v1/pairing/sessions",
 			map[string]any{"code": "BAD"}, "", "203.0.113.7")
 		if resp.StatusCode != http.StatusBadRequest {
-			t.Fatalf("非法配对应 400: %d", resp.StatusCode)
+			t.Fatalf("invalid pairing should 400: %d", resp.StatusCode)
 		}
 	}
 	// 已封禁:任何端点 403(封禁检查在失败豁免之前)。
 	resp, _ := env.doXFF(t, http.MethodGet, "/healthz", nil, "", "203.0.113.7")
 	if resp.StatusCode != http.StatusForbidden {
-		t.Fatalf("封禁后应 403: %d", resp.StatusCode)
+		t.Fatalf("banned should 403: %d", resp.StatusCode)
 	}
 	if bans.Active() != 1 {
 		t.Fatalf("Active = %d", bans.Active())
@@ -905,12 +905,12 @@ func TestBanMiddleware(t *testing.T) {
 	// 环回直连豁免(容器 HEALTHCHECK 形态)。
 	resp, _ = env.doXFF(t, http.MethodGet, "/healthz", nil, "", "")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("环回应豁免: %d", resp.StatusCode)
+		t.Fatalf("loopback should be exempt: %d", resp.StatusCode)
 	}
 	// 其他 IP 不受牵连。
 	resp, _ = env.doXFF(t, http.MethodGet, "/healthz", nil, "", "198.51.100.5")
 	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("未封禁 IP 不应受牵连: %d", resp.StatusCode)
+		t.Fatalf("unbanned IP should not be affected: %d", resp.StatusCode)
 	}
 }
 
@@ -918,10 +918,10 @@ func TestMetricsToken(t *testing.T) {
 	env := newTestEnvOpts(t, testEnvOpts{MetricsToken: "s3cret"})
 	resp, _ := env.doXFF(t, http.MethodGet, "/metrics", nil, "", "")
 	if resp.StatusCode != http.StatusUnauthorized {
-		t.Fatalf("无 token 应 401: %d", resp.StatusCode)
+		t.Fatalf("missing token should 401: %d", resp.StatusCode)
 	}
 	resp, body := env.doXFF(t, http.MethodGet, "/metrics", nil, "s3cret", "")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "devpilot_events_total") {
-		t.Fatalf("对 token 应 200: %d %s", resp.StatusCode, body)
+		t.Fatalf("with token should 200: %d %s", resp.StatusCode, body)
 	}
 }

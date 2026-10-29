@@ -42,7 +42,7 @@ const (
 )
 
 // ErrPayloadTooLarge 表示序列化后的载荷超过 APNs 上限。
-var ErrPayloadTooLarge = errors.New("apns: 载荷超过 4KB")
+var ErrPayloadTooLarge = errors.New("apns: payload exceeds 4KB")
 
 // Request 是一次推送请求。
 //
@@ -130,7 +130,7 @@ func New(cfg Config) (*Client, error) {
 	switch cfg.Environment {
 	case "production", "sandbox":
 	default:
-		return nil, fmt.Errorf("apns: 未知环境 %q", cfg.Environment)
+		return nil, fmt.Errorf("apns: unknown environment %q", cfg.Environment)
 	}
 	if cfg.RetryBase <= 0 {
 		cfg.RetryBase = 500 * time.Millisecond
@@ -163,15 +163,15 @@ func New(cfg Config) (*Client, error) {
 		return c, nil
 	}
 	if cfg.KeyPath == "" || cfg.KeyID == "" || cfg.TeamID == "" {
-		return nil, errors.New("apns: 非 Mock 模式需要 KeyPath、KeyID 与 TeamID")
+		return nil, errors.New("apns: KeyPath, KeyID and TeamID are required when Mock is disabled")
 	}
 	pem, err := os.ReadFile(cfg.KeyPath)
 	if err != nil {
-		return nil, fmt.Errorf("apns: 读取 .p8 失败: %w", err)
+		return nil, fmt.Errorf("apns: failed to read .p8: %w", err)
 	}
 	key, err := jwt.ParseECPrivateKeyFromPEM(pem)
 	if err != nil {
-		return nil, fmt.Errorf("apns: 解析 .p8 失败: %w", err)
+		return nil, fmt.Errorf("apns: failed to parse .p8: %w", err)
 	}
 	c.key = key
 	return c, nil
@@ -204,17 +204,17 @@ func (c *Client) Calls() []Call {
 // error 仅表示本地序列化、JWT 或传输失败。
 func (c *Client) Send(ctx context.Context, req Request) (Result, error) {
 	if req.DeviceToken == "" {
-		return Result{}, errors.New("apns: device token 为空")
+		return Result{}, errors.New("apns: device token is empty")
 	}
 	if req.Topic == "" {
-		return Result{}, errors.New("apns: topic 为空")
+		return Result{}, errors.New("apns: topic is empty")
 	}
 	payload, err := json.Marshal(req.Payload)
 	if err != nil {
-		return Result{}, fmt.Errorf("apns: 序列化载荷失败: %w", err)
+		return Result{}, fmt.Errorf("apns: failed to marshal payload: %w", err)
 	}
 	if len(payload) > MaxPayloadBytes {
-		return Result{}, fmt.Errorf("%w（%d 字节）", ErrPayloadTooLarge, len(payload))
+		return Result{}, fmt.Errorf("%w (%d bytes)", ErrPayloadTooLarge, len(payload))
 	}
 	if c.cfg.Mock {
 		return c.recordMock(req, payload), nil
@@ -292,7 +292,7 @@ func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte) (Res
 	url := c.endpoint() + "/3/device/" + req.DeviceToken
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
-		return Result{}, fmt.Errorf("apns: 构造请求失败: %w", err)
+		return Result{}, fmt.Errorf("apns: failed to build request: %w", err)
 	}
 	pushType := req.PushType
 	if pushType == "" {
@@ -316,7 +316,7 @@ func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte) (Res
 
 	resp, err := c.http.Do(hreq)
 	if err != nil {
-		return Result{}, fmt.Errorf("apns: 请求失败: %w", err)
+		return Result{}, fmt.Errorf("apns: request failed: %w", err)
 	}
 	defer resp.Body.Close()
 
@@ -350,7 +350,7 @@ func (c *Client) authToken() (string, error) {
 	t.Header["kid"] = c.cfg.KeyID
 	signed, err := t.SignedString(c.key)
 	if err != nil {
-		return "", fmt.Errorf("apns: 签发 JWT 失败: %w", err)
+		return "", fmt.Errorf("apns: failed to sign JWT: %w", err)
 	}
 	c.token = signed
 	c.tokenIssued = now

@@ -14,10 +14,10 @@ func Decode(data []byte) (any, error) {
 		Kind Kind `json:"kind"`
 	}
 	if err := json.Unmarshal(data, &head); err != nil {
-		return nil, fmt.Errorf("wire: 解析消息头失败: %w", err)
+		return nil, fmt.Errorf("wire: failed to parse message header: %w", err)
 	}
 	if head.V != Version {
-		return nil, fmt.Errorf("wire: 不支持的协议版本 %d（期望 %d）", head.V, Version)
+		return nil, fmt.Errorf("wire: unsupported protocol version %d (want %d)", head.V, Version)
 	}
 
 	switch head.Kind {
@@ -45,7 +45,7 @@ func Decode(data []byte) (any, error) {
 			return nil, err
 		}
 		if m.MsgID == "" {
-			return nil, fmt.Errorf("wire: ack 缺少 msg_id")
+			return nil, fmt.Errorf("wire: ack missing msg_id")
 		}
 		return &m, nil
 	case KindHello:
@@ -106,7 +106,7 @@ func Decode(data []byte) (any, error) {
 		}
 		return &m, nil
 	default:
-		return nil, fmt.Errorf("wire: 未知消息 kind %q", head.Kind)
+		return nil, fmt.Errorf("wire: unknown message kind %q", head.Kind)
 	}
 }
 

@@ -155,11 +155,11 @@ func TestSendSuccessHeadersAndJWT(t *testing.T) {
 	}
 	g := got[0]
 	if g.protoMajor != 2 {
-		t.Fatalf("必须走 HTTP/2，实际 HTTP/%d", g.protoMajor)
+		t.Fatalf("must use HTTP/2, got HTTP/%d", g.protoMajor)
 	}
 	if g.topic != req.Topic || g.pushType != "alert" || g.priority != "10" ||
 		g.expiration != "1760000120" || g.collapseID != "apv_1" {
-		t.Fatalf("请求头不符: %+v", g)
+		t.Fatalf("request headers mismatch: %+v", g)
 	}
 	if !strings.HasPrefix(g.auth, "bearer ") {
 		t.Fatalf("authorization = %q", g.auth)
@@ -168,12 +168,12 @@ func TestSendSuccessHeadersAndJWT(t *testing.T) {
 	// 校验 JWT：kid 与 iss。
 	parsed, err := jwt.Parse(strings.TrimPrefix(g.auth, "bearer "), func(tok *jwt.Token) (any, error) {
 		if tok.Method != jwt.SigningMethodES256 {
-			return nil, errors.New("非 ES256")
+			return nil, errors.New("not ES256")
 		}
 		return &key.PublicKey, nil
 	})
 	if err != nil {
-		t.Fatalf("JWT 校验失败: %v", err)
+		t.Fatalf("JWT verification failed: %v", err)
 	}
 	if kid, _ := parsed.Header["kid"].(string); kid != "KEY123" {
 		t.Fatalf("kid = %v", parsed.Header["kid"])
@@ -192,10 +192,10 @@ func TestSendSuccessHeadersAndJWT(t *testing.T) {
 	}
 	all := calls()
 	if len(all) != 3 || all[0].auth != all[1].auth {
-		t.Fatal("JWT 缓存未命中")
+		t.Fatal("JWT cache miss")
 	}
 	if all[2].auth == all[0].auth {
-		t.Fatal("50 分钟后 JWT 未刷新")
+		t.Fatal("JWT not refreshed after 50 minutes")
 	}
 
 	// 载荷在假服务器端可解析。
@@ -229,7 +229,7 @@ func TestErrorClassification(t *testing.T) {
 			t.Fatalf("res = %+v", res)
 		}
 		if len(calls()) != 1 {
-			t.Fatal("410 不应重试")
+			t.Fatal("410 should not retry")
 		}
 	})
 
@@ -244,7 +244,7 @@ func TestErrorClassification(t *testing.T) {
 			t.Fatalf("res = %+v", res)
 		}
 		if len(calls()) != 1 {
-			t.Fatal("400 不应重试")
+			t.Fatal("400 should not retry")
 		}
 	})
 
@@ -307,7 +307,7 @@ func TestErrorClassification(t *testing.T) {
 		}
 		all := calls()
 		if len(all) != 2 || all[0].auth == all[1].auth {
-			t.Fatal("未强制刷新 JWT")
+			t.Fatal("JWT not force-refreshed")
 		}
 	})
 }
@@ -374,17 +374,17 @@ func TestMockRecordsCalls(t *testing.T) {
 
 func TestNewRejectsBadConfig(t *testing.T) {
 	if _, err := New(Config{Environment: "staging"}); err == nil {
-		t.Fatal("未知环境应报错")
+		t.Fatal("unknown environment should error")
 	}
 	if _, err := New(Config{Environment: "sandbox", KeyID: "k", TeamID: "t"}); err == nil {
-		t.Fatal("缺少 KeyPath 应报错")
+		t.Fatal("missing KeyPath should error")
 	}
 	path := filepath.Join(t.TempDir(), "bad.p8")
 	if err := os.WriteFile(path, []byte("not a key"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := New(Config{KeyPath: path, KeyID: "k", TeamID: "t"}); err == nil {
-		t.Fatal("非法 .p8 应报错")
+		t.Fatal("invalid .p8 should error")
 	}
 }
 
@@ -393,6 +393,6 @@ func TestTruncateBytes(t *testing.T) {
 		t.Fatalf("got %q", got)
 	}
 	if got := truncateBytes("你好世界", 4); got != "你" {
-		t.Fatalf("UTF-8 边界截断错误: %q", got)
+		t.Fatalf("UTF-8 boundary truncation wrong: %q", got)
 	}
 }

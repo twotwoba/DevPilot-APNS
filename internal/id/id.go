@@ -10,7 +10,7 @@ import (
 func New() string {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		panic("id: 系统随机源不可用: " + err.Error())
+		panic("id: system random source unavailable: " + err.Error())
 	}
 	return "m_" + hex.EncodeToString(b[:])
 }

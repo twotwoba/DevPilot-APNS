@@ -30,7 +30,7 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: 构建镜像（不推送）
+      - name: Build image (no push)
         uses: docker/build-push-action@v6
         with:
           context: .

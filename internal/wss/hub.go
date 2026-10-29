@@ -148,13 +148,13 @@ func (h *Hub) Serve(parent context.Context, ws *websocket.Conn, role wire.Role, 
 		_, data, err := ws.Read(ctx)
 		if err != nil {
 			if ctx.Err() == nil {
-				h.log.Debug("连接断开", "role", role, "id", id, "err", err)
+				h.log.Debug("connection closed", "role", role, "id", id, "err", err)
 			}
 			return
 		}
 		msg, err := wire.Decode(data)
 		if err != nil {
-			h.log.Warn("收到无法解析的消息", "role", role, "id", id, "err", err)
+			h.log.Warn("received undecodable message", "role", role, "id", id, "err", err)
 			continue
 		}
 		h.dispatch(ctx, c, msg)
@@ -167,25 +167,25 @@ func (h *Hub) handshake(ctx context.Context, c *Conn) bool {
 	defer cancel()
 	_, data, err := c.ws.Read(hctx)
 	if err != nil {
-		h.log.Warn("等待 hello 失败", "role", c.Role, "id", c.ID, "err", err)
+		h.log.Warn("failed to wait for hello", "role", c.Role, "id", c.ID, "err", err)
 		return false
 	}
 	msg, err := wire.Decode(data)
 	if err != nil {
-		h.log.Warn("hello 无法解析", "err", err)
+		h.log.Warn("hello is undecodable", "err", err)
 		return false
 	}
 	hello, ok := msg.(*wire.Hello)
 	if !ok || hello.Role != c.Role {
-		h.log.Warn("首条消息必须是同角色 hello", "role", c.Role, "id", c.ID)
+		h.log.Warn("first message must be a hello with matching role", "role", c.Role, "id", c.ID)
 		return false
 	}
 	if c.Role == wire.RoleDaemon && hello.DaemonID != c.DaemonID {
-		h.log.Warn("hello daemon_id 与凭据不一致", "cred", c.DaemonID, "hello", hello.DaemonID)
+		h.log.Warn("hello daemon_id does not match credential", "cred", c.DaemonID, "hello", hello.DaemonID)
 		return false
 	}
 	if c.Role == wire.RoleApp && hello.DeviceID != c.ID {
-		h.log.Warn("hello device_id 与凭据不一致", "cred", c.ID, "hello", hello.DeviceID)
+		h.log.Warn("hello device_id does not match credential", "cred", c.ID, "hello", hello.DeviceID)
 		return false
 	}
 
@@ -283,9 +283,9 @@ func (c *Conn) Send(v any) error {
 	case c.out <- data:
 		return nil
 	case <-c.done:
-		return errors.New("wss: 连接已关闭")
+		return errors.New("wss: connection closed")
 	case <-timer.C:
-		return errors.New("wss: 发送队列已满")
+		return errors.New("wss: send queue full")
 	}
 }
 
@@ -308,6 +308,6 @@ func (h *Hub) dispatch(ctx context.Context, c *Conn, msg any) {
 	case *wire.Pong:
 		// 心跳应答，无需处理。
 	default:
-		h.log.Debug("忽略未知消息", "role", c.Role, "id", c.ID)
+		h.log.Debug("ignoring unknown message", "role", c.Role, "id", c.ID)
 	}
 }

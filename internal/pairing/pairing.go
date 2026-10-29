@@ -27,7 +27,7 @@ const (
 func NewCode() (string, error) {
 	var b [16]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("pairing: 生成配对码失败: %w", err)
+		return "", fmt.Errorf("pairing: failed to generate pairing code: %w", err)
 	}
 	return base32.StdEncoding.WithPadding(base32.NoPadding).EncodeToString(b[:]), nil
 }
@@ -39,7 +39,7 @@ func CodeHash(code string) string { return hashHex(code) }
 func NewSecret() (string, error) {
 	var b [32]byte
 	if _, err := rand.Read(b[:]); err != nil {
-		return "", fmt.Errorf("pairing: 生成 secret 失败: %w", err)
+		return "", fmt.Errorf("pairing: failed to generate secret: %w", err)
 	}
 	return hex.EncodeToString(b[:]), nil
 }
@@ -96,7 +96,7 @@ func hashHex(s string) string {
 func randomHex(n int) string {
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
-		panic("pairing: 系统随机源不可用: " + err.Error())
+		panic("pairing: system random source unavailable: " + err.Error())
 	}
 	return hex.EncodeToString(b)
 }

@@ -64,7 +64,7 @@ func FromEnv() (*Config, error) {
 	}
 	mock, err := strconv.ParseBool(env("APNS_MOCK", "false"))
 	if err != nil {
-		return nil, fmt.Errorf("config: APNS_MOCK 不是合法布尔值: %w", err)
+		return nil, fmt.Errorf("config: APNS_MOCK is not a valid boolean: %w", err)
 	}
 	c.APNSMock = mock
 
@@ -123,13 +123,13 @@ func FromEnv() (*Config, error) {
 	switch c.APNSEnvironment {
 	case "production", "sandbox":
 	default:
-		return nil, fmt.Errorf("config: APNS_ENVIRONMENT 只能是 production 或 sandbox")
+		return nil, fmt.Errorf("config: APNS_ENVIRONMENT must be production or sandbox")
 	}
 	if c.ListenAddr == "" {
-		return nil, fmt.Errorf("config: LISTEN_ADDR 不能为空")
+		return nil, fmt.Errorf("config: LISTEN_ADDR must not be empty")
 	}
 	if c.DataDir == "" {
-		return nil, fmt.Errorf("config: DATA_DIR 不能为空")
+		return nil, fmt.Errorf("config: DATA_DIR must not be empty")
 	}
 	return c, nil
 }
@@ -154,7 +154,7 @@ func envInt(key string, def int) (int, error) {
 	}
 	v, err := strconv.Atoi(raw)
 	if err != nil {
-		return 0, fmt.Errorf("config: %s 不是合法整数: %w", key, err)
+		return 0, fmt.Errorf("config: %s is not a valid integer: %w", key, err)
 	}
 	return v, nil
 }
@@ -166,7 +166,7 @@ func envInt64(key string, def int64) (int64, error) {
 	}
 	v, err := strconv.ParseInt(raw, 10, 64)
 	if err != nil {
-		return 0, fmt.Errorf("config: %s 不是合法整数: %w", key, err)
+		return 0, fmt.Errorf("config: %s is not a valid integer: %w", key, err)
 	}
 	return v, nil
 }
@@ -178,7 +178,7 @@ func envBool(key string, def bool) (bool, error) {
 	}
 	v, err := strconv.ParseBool(raw)
 	if err != nil {
-		return false, fmt.Errorf("config: %s 不是合法布尔值: %w", key, err)
+		return false, fmt.Errorf("config: %s is not a valid boolean: %w", key, err)
 	}
 	return v, nil
 }
