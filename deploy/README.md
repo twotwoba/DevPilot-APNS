@@ -53,7 +53,7 @@ never enter the image.
 ## 3. Start & self-check
 
 ```bash
-docker compose up -d --build
+docker compose pull && docker compose up -d
 docker compose ps
 curl -fsS https://relay.example.com/healthz   # ok
 curl -fsS https://relay.example.com/readyz    # ready (includes APNs key availability)
