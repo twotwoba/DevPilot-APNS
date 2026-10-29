@@ -53,7 +53,7 @@ devpilot-relay test-push --relay https://relay.example.com \
 | 维度 | 默认值 | 环境变量 | 语义 |
 |---|---|---|---|
 | 事件速率 | free 10/60s、pro 60/60s | `RATE_EVENT_FREE/PRO`、`RATE_EVENT_WINDOW_SECONDS` | per-daemon 令牌桶,超限回 `AckRejected`(daemon 终态丢弃,无重试风暴) |
-| 日推送配额 | free 500/天、pro 5000/天 | `QUOTA_DAILY_FREE/PRO` | per-daemon UTC 日历日,只拦 APNs 推送;WSS 实时/收件箱/resync 不受限 |
+| 日推送配额 | free 10/天、pro 5000/天 | `QUOTA_DAILY_FREE/PRO` | per-daemon UTC 日历日,只拦 APNs 推送;WSS 实时/收件箱/resync 不受限 |
 | 审批豁免 | 开 | `QUOTA_EXEMPT_APPROVALS` | `approval_required/task_complete` 豁免速率闸,**不**豁免日配额 |
 | 配对限流 | 15/10 每分钟每 IP | `PAIR_SESSION_LIMIT/PAIR_ATTEMPT_LIMIT` | 固定窗口 |
 | IP 封禁 | 100 次 4xx·5xx/5min → 封 24h | `BAN_THRESHOLD/WINDOW_SECONDS/TTL_SECONDS`、`BAN_ENABLED` | fail2ban 式;IPv4 整段、IPv6 /64 聚合;环回豁免 |
