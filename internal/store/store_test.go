@@ -99,11 +99,20 @@ func TestPairReplacesOldDevice(t *testing.T) {
 	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonID)
 	_, first := pairDevice(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
 
+	// 旧设备的 LA token 也必须在重配对时级联清除。
+	if err := s.PutLAToken(LAToken{DeviceID: first.ID, DaemonID: daemonID,
+		SessionID: "sess_1", PushToken: "tok", UpdatedAt: testNow}); err != nil {
+		t.Fatal(err)
+	}
+
 	seedPairing(t, s, "ZZZZZZZZZZZZZZZZZZZZZZZZZZ", daemonID)
 	_, second := pairDevice(t, s, "ZZZZZZZZZZZZZZZZZZZZZZZZZZ")
 
 	if _, err := s.Device(first.ID); err != ErrNotFound {
 		t.Fatalf("旧设备未删除: %v", err)
+	}
+	if toks, err := s.LATokensForDaemon(daemonID); err != nil || len(toks) != 0 {
+		t.Fatalf("旧设备 LA token 应级联清除: %+v err=%v", toks, err)
 	}
 	devices, err := s.DevicesForDaemon(daemonID)
 	if err != nil || len(devices) != 1 || devices[0].ID != second.ID {

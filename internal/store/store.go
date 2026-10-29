@@ -353,7 +353,9 @@ func (s *Store) Pair(codeHash string, device Device, tier Tier, now int64) (Daem
 			return err
 		}
 		for _, k := range stale {
-			if err := devices.Delete(k); err != nil {
+			// 走 deleteDeviceTx 级联清 LA token：只删 device 行会留下
+			// 永远无人读取的孤儿 token(设备行已不在,读取路径全部按行走)。
+			if err := deleteDeviceTx(tx, string(k)); err != nil {
 				return err
 			}
 		}
