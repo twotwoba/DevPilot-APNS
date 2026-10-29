@@ -11,7 +11,9 @@ RUN go mod download
 
 COPY . .
 ARG VERSION=dev
-RUN go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /out/devpilot-relay ./cmd/relay \
+# TARGETARCH 由 buildx/BuildKit 注入：交叉编译代替 QEMU 模拟编译，速度差一个量级；
+# 未注入时（无 BuildKit 的现场构建）回退到容器自身架构，即宿主架构。
+RUN GOARCH="${TARGETARCH:-$(go env GOARCH)}" go build -trimpath -ldflags="-s -w -X main.Version=${VERSION}" -o /out/devpilot-relay ./cmd/relay \
     && mkdir -p /empty
 
 # ---------- 运行阶段 ----------
