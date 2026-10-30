@@ -30,7 +30,7 @@ const (
 	KindLATokenAck   Kind = "la_token_ack"
 )
 
-// EventType 是收件箱五事件 + 会话结束扩展。
+// EventType 是收件箱五事件 + 会话结束/审批关闭扩展。
 type EventType string
 
 const (
@@ -40,18 +40,32 @@ const (
 	EventApprovalRequired EventType = "approval_required"
 	EventTaskComplete     EventType = "task_complete"
 	EventSessionEnded     EventType = "session_ended"
+	// EventApprovalClosed 表示一条审批已终结：被批准/拒绝（手机或本地决策）、
+	// 等待超时（expired）、或用户在终端侧取消（cancelled，Ctrl-C / Esc）。
+	// 携带原 approval_id；relay 与 daemon 都可能发射，event_id 用
+	// "close-"+approval_id 确定性去重，两条路径收敛为一条。
+	EventApprovalClosed EventType = "approval_closed"
 )
 
 // Valid 判断事件类型是否合法。
 func (t EventType) Valid() bool {
 	switch t {
 	case EventSessionStarted, EventToolRunning, EventToolFinished,
-		EventApprovalRequired, EventTaskComplete, EventSessionEnded:
+		EventApprovalRequired, EventTaskComplete, EventSessionEnded,
+		EventApprovalClosed:
 		return true
 	default:
 		return false
 	}
 }
+
+// CloseReason 是 approval_closed 的 payload.status_text 取值约定。
+const (
+	CloseReasonApproved  = "approved"   // 手机/本地决策：允许
+	CloseReasonDenied    = "denied"     // 手机/本地决策：拒绝
+	CloseReasonExpired   = "expired"    // 等待窗耗尽，回落终端原生提示
+	CloseReasonCancelled = "cancelled"  // 用户在终端 Ctrl-C / Esc 取消等待
+)
 
 // Agent 是 hook 来源。
 type Agent string
@@ -109,8 +123,11 @@ const (
 
 // Payload 是云通道允许传输的摘要白名单。
 //
-// 隐私红线：这里只允许出现「通知里用户看得到的内容」。完整输出、文件内容、
-// 环境变量、cwd 之外的路径一律不得进入本结构。
+// 隐私红线：摘要字段（title~is_alert）仍然只允许出现「通知里用户看得到的
+// 内容」，完整输出、文件内容、任意工具产出一律不得进入。v0.3.0 新增的主机
+// 路由字段（hostname~cwd）仅用于 App 端匹配 HostRecord / 直进 tmux 会话 /
+// 一键补建主机预填：cwd 不进入通知文案、只在 App 内展示；除 $TMUX/$USER
+// 这两个明确定义的值外，其他环境变量仍不得进入本结构。
 type Payload struct {
 	// Title 是会话标题（截断到 MaxTitleRunes）。
 	Title string `json:"title,omitempty"`
@@ -131,6 +148,18 @@ type Payload struct {
 	StatusIcon string `json:"status_icon,omitempty"`
 	// IsAlert 为 true 时 Live Activity 需要强调。
 	IsAlert bool `json:"is_alert,omitempty"`
+	// Hostname 是 daemon 上报的主机名（os.Hostname），App 用于匹配 HostRecord。
+	Hostname string `json:"hostname,omitempty"`
+	// HostIP 是 daemon 尽力探测的内网 IPv4（默认路由接口首个非环回地址），
+	// App 用于主机匹配与一键补建预填。
+	HostIP string `json:"host_ip,omitempty"`
+	// TmuxSession 是审批发生时所在 tmux 会话名（tmux display-message -p '#S'），
+	// App 用于直进/attach 对应会话。
+	TmuxSession string `json:"tmux_session,omitempty"`
+	// User 是 hook 进程的 $USER，一键补建主机时预填用户名。
+	User string `json:"user,omitempty"`
+	// Cwd 是会话完整工作目录：仅用于 App 端会话/项目匹配，不进入通知文案。
+	Cwd string `json:"cwd,omitempty"`
 }
 
 // Envelope 是 kind=event 的消息体。
@@ -145,9 +174,13 @@ type Envelope struct {
 	DaemonID   string          `json:"daemon_id"`
 	SessionID  string          `json:"session_id"`
 	Seq        int64           `json:"seq,omitempty"`
-	Payload    Payload         `json:"payload"`
-	TS         int64           `json:"ts"`
-	Raw        json.RawMessage `json:"-"`
+	// ExpiresAt 是本轮审批等待窗的截止时刻（Unix 秒，daemon 盖章 = ts + 等待窗）。
+	// 仅 approval_required 携带；relay 据此派生 pending TTL / APNs 过期 /
+	// LA stale-date，缺失时回落旧常量。其余事件类型不得设置。
+	ExpiresAt int64           `json:"expires_at,omitempty"`
+	Payload   Payload         `json:"payload"`
+	TS        int64           `json:"ts"`
+	Raw       json.RawMessage `json:"-"`
 }
 
 // Decision 是 App 上行的人工审批结果。
@@ -280,6 +313,9 @@ func (e *Envelope) Validate() error {
 	}
 	if e.Type == EventApprovalRequired && e.ApprovalID == "" {
 		return fmt.Errorf("wire: approval_required requires approval_id")
+	}
+	if e.Type == EventApprovalClosed && e.ApprovalID == "" {
+		return fmt.Errorf("wire: approval_closed requires approval_id")
 	}
 	return nil
 }

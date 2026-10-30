@@ -82,6 +82,18 @@ func TestApprovalRequiredNeedsID(t *testing.T) {
 	}
 }
 
+// TestApprovalClosedNeedsID 确认审批关闭事件也必须带 approval_id。
+func TestApprovalClosedNeedsID(t *testing.T) {
+	env := Envelope{
+		V: Version, Kind: KindEvent, MsgID: "m", EventID: "close-x",
+		Type: EventApprovalClosed, Agent: AgentClaude,
+		DaemonID: "dd_x", SessionID: "s", TS: 1,
+	}
+	if err := env.Validate(); err == nil {
+		t.Fatal("approval_closed 缺少 approval_id 时应报错")
+	}
+}
+
 // TestApprovalIDDeterministic 确认键顺序与空白不影响审批 ID。
 func TestApprovalIDDeterministic(t *testing.T) {
 	a, err := ApprovalID("sess", "Bash", "tu_1", json.RawMessage(`{"command":"ls","cwd":"/tmp"}`))
@@ -178,6 +190,72 @@ func TestLiveActivityEndsOnSessionEnd(t *testing.T) {
 	update := LiveActivityPushFor(Envelope{Type: EventToolRunning, SessionID: "s", TS: 100}, 200)
 	if update.APS.Event != "update" {
 		t.Fatalf("期望 update，实际 %q", update.APS.Event)
+	}
+}
+
+// TestCloudApprovalPushShapes 固化云审批 LA 推送契约：
+// push-to-start 带 attributes/attributes-type；needsYou 倒计时从 expires_at 派生
+// stale；close/task_complete/session_end 映射为 end 且带短 dismissal。
+func TestCloudApprovalPushShapes(t *testing.T) {
+	approval := Envelope{
+		Type: EventApprovalRequired, ApprovalID: "apv_x",
+		DaemonID: "dd_1", SessionID: "sess_1", Agent: AgentClaude,
+		ExpiresAt: 1000, TS: 100,
+		Payload: Payload{SessionTitle: "支付重构", ToolName: "Bash",
+			CommandSummary: "make deploy", Hostname: "mbp.local"},
+	}
+
+	start := CloudApprovalPushFor(approval, 200, true)
+	if start.APS.Event != "start" {
+		t.Fatalf("期望 start，实际 %q", start.APS.Event)
+	}
+	if start.APS.AttributesType != CloudApprovalAttributesType {
+		t.Fatalf("attributes-type 不符: %q", start.APS.AttributesType)
+	}
+	if start.APS.Attributes["sessionId"] != "sess_1" || start.APS.Attributes["daemonId"] != "dd_1" {
+		t.Fatalf("push-to-start attributes 不符: %v", start.APS.Attributes)
+	}
+	if start.APS.StaleDate != approval.ExpiresAt+60 {
+		t.Fatalf("needsYou stale 应为 expires_at+60，实际 %d", start.APS.StaleDate)
+	}
+	if cs := start.APS.ContentState; cs.State != CloudStateNeedsYou || cs.ExpiresAt != 1000 {
+		t.Fatalf("needsYou content-state 不符: %+v", cs)
+	}
+
+	update := CloudApprovalPushFor(approval, 200, false)
+	if update.APS.Event != "update" || update.APS.Attributes != nil {
+		t.Fatalf("update 推送不应带 attributes: %+v", update.APS)
+	}
+
+	for _, c := range []struct {
+		typ    EventType
+		reason string
+		want   string
+	}{
+		{EventApprovalClosed, CloseReasonApproved, CloudStateApproved},
+		{EventApprovalClosed, CloseReasonDenied, CloudStateDenied},
+		{EventApprovalClosed, CloseReasonExpired, CloudStateExpired},
+		{EventApprovalClosed, CloseReasonCancelled, CloudStateCancelled},
+	} {
+		env := approval
+		env.Type = c.typ
+		env.Payload.StatusText = c.reason
+		end := CloudApprovalPushFor(env, 200, false)
+		if end.APS.Event != "end" {
+			t.Fatalf("%s 期望 end，实际 %q", c.reason, end.APS.Event)
+		}
+		if end.APS.DismissalDate != 205 {
+			t.Fatalf("%s dismissal 应为 now+5，实际 %d", c.reason, end.APS.DismissalDate)
+		}
+		if end.APS.ContentState.State != c.want {
+			t.Fatalf("终态映射不符: 期望 %s 实际 %s", c.want, end.APS.ContentState.State)
+		}
+	}
+
+	// 非审批事件：卡片回到 working 形态，无倒计时。
+	working := CloudApprovalPushFor(Envelope{Type: EventToolRunning, SessionID: "s", TS: 100}, 200, false)
+	if working.APS.ContentState.State != CloudStateWorking || working.APS.ContentState.ExpiresAt != 0 {
+		t.Fatalf("working content-state 不符: %+v", working.APS.ContentState)
 	}
 }
 

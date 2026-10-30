@@ -1,0 +1,17 @@
+{
+  "v": 1,
+  "kind": "event",
+  "msg_id": "0192f0c4-0000-7000-8000-000000000011",
+  "event_id": "close-apv_mfrggzdfmztwq2lknnwg23tpob",
+  "approval_id": "apv_mfrggzdfmztwq2lknnwg23tpob",
+  "type": "approval_closed",
+  "agent": "claude",
+  "daemon_id": "dd_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "session_id": "sess_01J9Z8K4T3M2N1P0Q7R6S5T4V3",
+  "seq": 1025,
+  "payload": {
+    "title": "重构支付模块",
+    "status_text": "expired"
+  },
+  "ts": 1760770300
+}
