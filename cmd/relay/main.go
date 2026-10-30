@@ -31,6 +31,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/server"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
+	"github.com/twotwoba/DevPilot-APNS/pkg/wire"
 )
 
 // Version 由 goreleaser 注入。
@@ -142,6 +143,7 @@ func runServe(args []string) int {
 		}
 		notifier = deliver.New(deliver.Config{
 			Store: st, Pusher: client, Metrics: m, Logger: logger, Quota: eng, Now: now,
+			APNSCategory: cfg.APNSCategory, QuotaExemptApprovalPushes: cfg.QuotaExemptApprovalPushes,
 		})
 		apnsOK = client.Healthy
 		logger.Info("APNs enabled", "mock", cfg.APNSMock, "environment", cfg.APNSEnvironment)
@@ -199,7 +201,8 @@ func runServe(args []string) int {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	// 周期清理过期审批/收件箱/配对码。
+	// 周期清理过期审批/收件箱/配对码;新过期的审批由 relay 合成 approval_closed
+	// 广播手机(旧 daemon 不发自发 close,过期收敛在此兜底)。
 	go func() {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
@@ -208,8 +211,12 @@ func runServe(args []string) int {
 			case <-ctx.Done():
 				return
 			case <-ticker.C:
-				if err := st.Cleanup(now().Unix()); err != nil {
+				expired, err := st.Cleanup(now().Unix())
+				if err != nil {
 					logger.Warn("failed to clean up expired data", "err", err)
+				}
+				for _, p := range expired {
+					hub.SynthesizeClose(p, wire.CloseReasonExpired)
 				}
 			}
 		}

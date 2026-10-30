@@ -231,7 +231,8 @@ func TestPairAndApprovalFlow(t *testing.T) {
 		t.Fatalf("app received event = %+v", live)
 	}
 
-	// 手机允许。
+	// 手机允许。决策落地后手机先收到合成的 approval_closed(撤卡/横幅变脸),
+	// 再收到 ack;daemon 收到转发决策。
 	send(t, app, wire.Decision{
 		V: wire.Version, Kind: wire.KindDecision, MsgID: "m_d1",
 		ApprovalID: approvalID, Decision: wire.DecisionAllow, TS: time.Now().Unix(),
@@ -239,6 +240,11 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	d, ok := recv(t, daemon).(*wire.Decision)
 	if !ok || d.ApprovalID != approvalID || d.Decision != wire.DecisionAllow {
 		t.Fatalf("daemon received decision = %+v", d)
+	}
+	closed, ok := recv(t, app).(*wire.Envelope)
+	if !ok || closed.Type != wire.EventApprovalClosed || closed.EventID != "close-"+approvalID ||
+		closed.Payload.StatusText != wire.CloseReasonApproved {
+		t.Fatalf("synthesized close = %+v", closed)
 	}
 	ack, ok = recv(t, app).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAccepted {
@@ -274,7 +280,8 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	if len(rs.Pending) != 0 {
 		t.Fatalf("decided approval still in pending: %+v", rs.Pending)
 	}
-	if len(rs.Events) != 1 || rs.Events[0].EventID != "ev_1" {
+	if len(rs.Events) != 2 || rs.Events[0].EventID != "ev_1" ||
+		rs.Events[1].Type != wire.EventApprovalClosed || rs.Events[1].EventID != "close-"+approvalID {
 		t.Fatalf("resync events = %+v", rs.Events)
 	}
 
@@ -286,7 +293,7 @@ func TestPairAndApprovalFlow(t *testing.T) {
 	}
 	send(t, app, wire.Resync{V: wire.Version, Kind: wire.KindResync, MsgID: "m_rs2"})
 	rs, _ = recv(t, app).(*wire.ResyncResult)
-	if len(rs.Events) != 1 {
+	if len(rs.Events) != 2 {
 		t.Fatalf("duplicate event entered inbox: %d", len(rs.Events))
 	}
 
@@ -386,6 +393,10 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 		V: wire.Version, Kind: wire.KindDecision, MsgID: "m_offline_d",
 		ApprovalID: approvalID, Decision: wire.DecisionDeny, TS: now,
 	})
+	closed, ok := recv(t, app).(*wire.Envelope)
+	if !ok || closed.Type != wire.EventApprovalClosed || closed.Payload.StatusText != wire.CloseReasonDenied {
+		t.Fatalf("synthesized close = %+v", closed)
+	}
 	ack, ok := recv(t, app).(*wire.Ack)
 	if !ok || ack.Status != wire.AckAccepted {
 		t.Fatalf("ack = %+v", ack)
@@ -923,5 +934,154 @@ func TestMetricsToken(t *testing.T) {
 	resp, body := env.doXFF(t, http.MethodGet, "/metrics", nil, "s3cret", "")
 	if resp.StatusCode != http.StatusOK || !strings.Contains(string(body), "devpilot_events_total") {
 		t.Fatalf("with token should 200: %d %s", resp.StatusCode, body)
+	}
+}
+
+// TestDecisionREST REST 决策通道(LA 按钮/App Intent 与通知按钮的回落路径):
+// 认证、参数校验、first-wins、unknown、daemon 转发与 close 合成均与 WSS 共路。
+func TestDecisionREST(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	now := time.Now().Unix()
+	approvalID := "apv_" + strings.Repeat("r", 26)
+	ev := wire.Envelope{
+		V: wire.Version, Kind: wire.KindEvent, MsgID: "m_rest", EventID: "ev_rest",
+		ApprovalID: approvalID, Type: wire.EventApprovalRequired, Agent: wire.AgentClaude,
+		DaemonID: testDaemonID, SessionID: "sess_1", TS: now,
+		Payload: wire.Payload{ToolName: "Bash"},
+	}
+	if _, _, err := env.store.AppendInbox(testDaemonID, ev, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.PutPending(store.Pending{
+		ApprovalID: approvalID, DaemonID: testDaemonID, Event: ev, Status: "pending",
+		CreatedAt: now, ExpiresAt: now + 1800,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// 无凭据 401;非法 decision 400;缺 approval_id 400。
+	resp, _ := env.post(t, "/v1/decisions", map[string]any{"approval_id": approvalID, "decision": "allow"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing credential should 401: %d", resp.StatusCode)
+	}
+	resp, _ = env.post(t, "/v1/decisions", map[string]any{"approval_id": approvalID, "decision": "maybe"}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid decision should 400: %d", resp.StatusCode)
+	}
+	resp, _ = env.post(t, "/v1/decisions", map[string]any{"decision": "allow"}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("missing approval_id should 400: %d", resp.StatusCode)
+	}
+
+	// daemon 在线:决策应转发,close 应合成入箱。
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_rd",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: now,
+	})
+	resp, body := env.post(t, "/v1/decisions",
+		map[string]any{"approval_id": approvalID, "decision": "allow"}, env.deviceCr)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("decide HTTP %d: %s", resp.StatusCode, body)
+	}
+	var out struct {
+		Status string `json:"status"`
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.Status != string(wire.AckAccepted) {
+		t.Fatalf("status = %q (%s)", out.Status, body)
+	}
+	d, ok := recv(t, daemon).(*wire.Decision)
+	if !ok || d.ApprovalID != approvalID || d.Decision != wire.DecisionAllow {
+		t.Fatalf("daemon received decision = %+v", d)
+	}
+
+	// close 事件进收件箱:App 离线也能经 resync 恢复终态。
+	app := dial(t, env.ts, "/ws/app", env.deviceCr)
+	hello(t, app, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_ra",
+		Role: wire.RoleApp, DeviceID: env.deviceID, TS: now,
+	})
+	send(t, app, wire.Resync{V: wire.Version, Kind: wire.KindResync, MsgID: "m_rs"})
+	rs, ok := recv(t, app).(*wire.ResyncResult)
+	if !ok {
+		t.Fatal("missing resync_result")
+	}
+	sawClose := false
+	for _, e := range rs.Events {
+		if e.Type == wire.EventApprovalClosed {
+			sawClose = e.EventID == "close-"+approvalID && e.Payload.StatusText == wire.CloseReasonApproved
+		}
+	}
+	if !sawClose {
+		t.Fatalf("approval_closed missing from inbox: %+v", rs.Events)
+	}
+
+	// first-wins 与 unknown。
+	resp, body = env.post(t, "/v1/decisions",
+		map[string]any{"approval_id": approvalID, "decision": "deny"}, env.deviceCr)
+	if err := json.Unmarshal(body, &out); err != nil || out.Status != string(wire.AckAlreadyDecided) {
+		t.Fatalf("duplicate decision status = %q (%s)", out.Status, body)
+	}
+	resp, body = env.post(t, "/v1/decisions",
+		map[string]any{"approval_id": "apv_nope", "decision": "deny"}, env.deviceCr)
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("unknown decision HTTP %d: %s", resp.StatusCode, body)
+	}
+	if err := json.Unmarshal(body, &out); err != nil || out.Status != string(wire.AckUnknown) {
+		t.Fatalf("unknown status = %q (%s)", out.Status, body)
+	}
+}
+
+// TestLATokenPushStartREST push_start 上报设备级云审批 LA token:
+// 允许空 session_id(App 未起任何 activity);缺 push_token 400;未知 event 400。
+func TestLATokenPushStartREST(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	resp, body := env.post(t, "/v1/la-tokens", map[string]any{
+		"daemon_id": testDaemonID, "event": "push_start", "push_token": "pts-token",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("push_start HTTP %d: %s", resp.StatusCode, body)
+	}
+	dev, err := env.store.Device(env.deviceID)
+	if err != nil || dev.PushToStartToken != "pts-token" {
+		t.Fatalf("device = %+v err=%v", dev, err)
+	}
+
+	resp, _ = env.post(t, "/v1/la-tokens", map[string]any{
+		"daemon_id": testDaemonID, "event": "push_start",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("push_start without token should 400: %d", resp.StatusCode)
+	}
+	resp, _ = env.post(t, "/v1/la-tokens", map[string]any{
+		"daemon_id": testDaemonID, "session_id": "sess_1", "event": "bogus", "push_token": "x",
+	}, env.deviceCr)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("unknown event should 400: %d", resp.StatusCode)
+	}
+	resp, _ = env.post(t, "/v1/la-tokens", map[string]any{"event": "push_start", "push_token": "x"}, "")
+	if resp.StatusCode != http.StatusUnauthorized {
+		t.Fatalf("missing credential should 401: %d", resp.StatusCode)
+	}
+}
+
+// TestDaemonWSRecordsObservedIP daemon WSS 建连即记录观测源 IP
+// (v3 增量字段,NAT 后公网地址仅作路由提示)。
+func TestDaemonWSRecordsObservedIP(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	daemon := dial(t, env.ts, "/ws/daemon", env.cred)
+	hello(t, daemon, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_ip",
+		Role: wire.RoleDaemon, DaemonID: testDaemonID, TS: time.Now().Unix(),
+	})
+	d, err := env.store.Daemon(testDaemonID)
+	if err != nil || d.LastIP == "" {
+		t.Fatalf("daemon last_ip not recorded: %+v err=%v", d, err)
 	}
 }

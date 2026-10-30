@@ -36,6 +36,10 @@ const (
 // 可被 daemon 配置 approval_timeout_seconds 覆盖；install 写入 hook 超时 = 本值 + 60。
 const DefaultApprovalWaitSeconds = 1800
 
+// MaxApprovalWaitSeconds 是 expires_at 的合法上限钳制值（6 小时）。
+// daemon 盖章与 relay 校验共用,防止配置错误把等待窗写成天文数字。
+const MaxApprovalWaitSeconds = 21600
+
 // Truncate 按 Unicode 字符截断，超出时保留 max-1 个字符并追加省略号。
 func Truncate(s string, max int) string {
 	if max <= 0 {

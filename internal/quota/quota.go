@@ -107,8 +107,10 @@ func (e *Engine) limits(tier store.Tier) (rate int, day int64) {
 }
 
 // exemptEvent 审批类事件:用户在终端前等人点头,饿死它等于功能不可用。
+// approval_closed 是审批终态广播(撤横幅/LA 收场),同样不能被饿死。
 func exemptEvent(t wire.EventType) bool {
-	return t == wire.EventApprovalRequired || t == wire.EventTaskComplete
+	return t == wire.EventApprovalRequired || t == wire.EventTaskComplete ||
+		t == wire.EventApprovalClosed
 }
 
 // takeTokenLocked 消费一个令牌;按流逝时间线性补充,上限=容量。

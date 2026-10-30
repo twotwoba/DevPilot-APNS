@@ -208,6 +208,59 @@ la_tokens  key=device_hash+"/"+session_id  value={push_token, updated_at}       
 
 ---
 
+## 15. v0.3.0 增量:随时可批 + approval_closed + 云审批 LA(2026-10)
+
+上游决策:审批等待窗默认 30min(旧 300s 回落)、锁屏 Live Activity 直接批准、
+审批关闭事件收敛、通知携带主机身份供 App 路由。全部为 V=1 增量,旧 daemon/旧 App 双向兼容。
+
+### 15.1 协议增量(`pkg/wire`)
+
+- `Envelope.ExpiresAt`(approval_required 必带 = ts + daemon 等待窗,上限钳制 6h);
+- 新事件 `approval_closed`:审批终态广播。`event_id = "close-" + approval_id` **确定性**,
+  三条产生路径(relay 合成决策 / relay 清理循环过期 / daemon 自发取消)经 inbox 去重自然收敛;
+- `Payload` 增主机路由字段:`hostname / host_ip / tmux_session / user / cwd`(App 收件箱点按 → 匹配 HostRecord → 直进 tmux);
+- 新 `cloudapproval.go`:云审批 LA 推送体(`CloudApprovalAttributes`),push-to-start 的 start 事件带
+  `attributes` + `attributes-type = "CloudApprovalAttributes"`(与 Xcode 端类型名逐字一致);
+- 常量语义变化:`PendingTTLSeconds / APNSApprovalExpirySeconds` 降为**旧 daemon 回落值**,
+  等待窗以 per-审批 `expires_at` 为准(`DefaultApprovalWaitSeconds = 1800` 供 Hook 引用)。
+
+### 15.2 relay 行为增量
+
+- **决策双通道**:WSS `decision` 与新 REST `POST /v1/decisions`(设备 Bearer)共路
+  `Hub.ApplyDeviceDecision`——first-wins → 转发 daemon(离线待补发)→ 合成 `approval_closed` 广播。
+  REST 通道服务 LA 按钮(App Intent 进程,App 被杀也能批)与 WSS 断连时的通知按钮回落;
+- **approval_closed 投递**:同 `collapse-id "apv-<id>"` 的**替换推送**(无声、无打断级别、+60s 短过期),
+  让已投递横幅「变脸」为 Approved/Denied/Missed/Answered at terminal——APNs 撤不回已投递 alert,
+  替换是平台上限;锁屏干净退场靠云审批卡的 end 推送;
+- **云审批 LA**(`sendCloudActivity`,与本地会话进度卡的 legacy LA 并存):
+  - 会话级 token(App 前台起卡上报)→ update / end;
+  - 无会话级 token 时,设备级 **push-to-start token**(新 REST `POST /v1/la-tokens {event:"push_start"}`,
+    空 session_id)由 relay 发 start 起卡(iOS 17.2+,App 被杀也能起);
+  - 410 剪枝同 legacy;审批范围推送豁免日配额(见 15.4);
+- **清理循环合成 close**:`Store.Cleanup` 返回新过期 pending,主循环逐条合成 expired close
+  (旧 daemon 不发 close 的兜底);daemon WSS 建连记 `Daemon.LastIP`(NAT 公网,仅路由提示)。
+
+### 15.3 store schema v3(纯增量,免迁移)
+
+`Daemon.LastIP`、`Device.PushToStartToken`(均 omitempty JSON,旧数据零值加载)。
+
+### 15.4 新环境变量与回滚旋钮
+
+| 变量 | 默认 | 说明 |
+|---|---|---|
+| `APNS_CATEGORY` | `DEVPILOT_APPROVAL` | 审批 category(拼写修正)。**存量 App 只注册旧串 `DEVPLOT_APPROVAL`,App 新版铺开前部署侧显式设旧值**,铺开后删行回归默认 |
+| `QUOTA_EXEMPT_APPROVAL_PUSHES` | `1` | 审批范围推送(approval alert + 云审批 LA)豁免 UTC 日配额——免费档 10 条/日会被 LA 更新烧穿,旗舰功能不能被配额哑掉;遥测 LA 仍计数 |
+
+速率闸豁免集追加 `approval_closed`(终态广播不能被饿死)。
+
+### 15.5 兼容矩阵(已对代码核实)
+
+- 旧 App:新字段 `decodeIfPresent` 忽略;`approval_closed` 走既有 upsert else 分支自动撤卡;
+- 旧 daemon:无 `expires_at` → pending TTL/APNs 过期回落旧常量;不发 close → relay 清理循环兜底合成;
+- 新 relay 先行上线(category 设旧值),CLI v0.3.0 与 App 随后,三方独立可回滚。
+
+---
+
 ## 来源与依据
 
 - 上游总设计:DevPilot 仓库 `Docs/DevPilot-Hook守护进程与推送中继设计.md`(§4 事件/§6 配对/§7 APNs 原理详解/§8 中继架构/§13 运维——本文为其 relay 部分的实现级展开)

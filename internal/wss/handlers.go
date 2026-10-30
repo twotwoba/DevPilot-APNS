@@ -46,7 +46,7 @@ func (h *Hub) onEvent(ctx context.Context, c *Conn, env *wire.Envelope) {
 			Event:      stored,
 			Status:     "pending",
 			CreatedAt:  now,
-			ExpiresAt:  now + wire.PendingTTLSeconds,
+			ExpiresAt:  now + pendingTTL(stored, now),
 		}
 		if err := h.cfg.Store.PutPending(p); err != nil {
 			h.log.Error("failed to record pending approval", "approval_id", stored.ApprovalID, "err", err)
@@ -66,22 +66,80 @@ func (h *Hub) onDecision(c *Conn, d *wire.Decision) {
 		h.ack(c, d.MsgID, "", d.ApprovalID, wire.AckRejected)
 		return
 	}
-	now := h.now().Unix()
-	status, p, err := h.cfg.Store.ApplyDecision(d.ApprovalID, c.DaemonID, string(d.Decision), now)
+	status, err := h.ApplyDeviceDecision(c.DaemonID, d.ApprovalID, d.Decision, h.now().Unix())
 	if err != nil {
 		h.log.Error("failed to apply decision", "approval_id", d.ApprovalID, "err", err)
 		h.ack(c, d.MsgID, "", d.ApprovalID, wire.AckRejected)
 		return
 	}
 	h.cfg.Metrics.IncDecision(string(d.Decision), string(status))
-
-	if status == wire.AckAccepted {
-		h.forwardDecision(p.DaemonID, wire.Decision{
-			V: wire.Version, Kind: wire.KindDecision, MsgID: id.New(),
-			ApprovalID: d.ApprovalID, Decision: d.Decision, TS: now,
-		})
-	}
 	h.ack(c, d.MsgID, "", d.ApprovalID, status)
+}
+
+// ApplyDeviceDecision 是设备决策的唯一入口(WSS onDecision 与 REST /v1/decisions 共用):
+// first-wins 落库 → 转发 daemon(离线则待重连补发) → 合成 approval_closed 广播手机。
+func (h *Hub) ApplyDeviceDecision(daemonID, approvalID string, decision wire.DecisionKind, now int64) (wire.AckStatus, error) {
+	status, p, err := h.cfg.Store.ApplyDecision(approvalID, daemonID, string(decision), now)
+	if err != nil {
+		return status, err
+	}
+	if status != wire.AckAccepted {
+		return status, nil
+	}
+	h.forwardDecision(p.DaemonID, wire.Decision{
+		V: wire.Version, Kind: wire.KindDecision, MsgID: id.New(),
+		ApprovalID: approvalID, Decision: decision, TS: now,
+	})
+	reason := wire.CloseReasonApproved
+	if decision == wire.DecisionDeny {
+		reason = wire.CloseReasonDenied
+	}
+	h.SynthesizeClose(p, reason)
+	return status, nil
+}
+
+// SynthesizeClose 为一条已终结的审批合成 approval_closed 事件并广播:
+// 入箱(确定性 event_id 去重,与 daemon 自发路径收敛)→ WSS 扇出 → APNs 替换推送/LA 收场。
+// 供决策落地(手机/REST)、过期清理循环两个来源调用;daemon 自发的 close 走 onEvent 常规路径。
+func (h *Hub) SynthesizeClose(p store.Pending, reason string) {
+	if p.ApprovalID == "" {
+		return
+	}
+	now := h.now().Unix()
+	// 主机路由字段原样带回:App 端收件箱行点击仍可路由到主机/会话。
+	pl := p.Event.Payload
+	pl.StatusText = reason
+	closeEnv := wire.Envelope{
+		V: wire.Version, Kind: wire.KindEvent, MsgID: id.New(),
+		EventID: "close-" + p.ApprovalID,
+		ApprovalID: p.ApprovalID,
+		Type:      wire.EventApprovalClosed,
+		Agent:     p.Event.Agent,
+		DaemonID:  p.DaemonID,
+		SessionID: p.Event.SessionID,
+		Payload:   pl,
+		TS:        now,
+	}
+	stored, duplicate, err := h.cfg.Store.AppendInbox(p.DaemonID, closeEnv, now)
+	if err != nil {
+		h.log.Error("failed to append approval_closed", "approval_id", p.ApprovalID, "err", err)
+		return
+	}
+	if duplicate {
+		// daemon 已自发同 ID 的 close(或另一路径先合成):收敛,不重复广播。
+		return
+	}
+	h.cfg.Metrics.IncEvent(string(wire.EventApprovalClosed))
+	h.sendToApps(p.DaemonID, stored)
+	h.notify(context.Background(), stored)
+}
+
+// pendingTTL 由 envelope.expires_at 派生等待窗时长;旧 daemon 无该字段或值离谱时回落旧常量。
+func pendingTTL(env wire.Envelope, now int64) int64 {
+	if env.ExpiresAt > now && env.ExpiresAt <= now+wire.MaxApprovalWaitSeconds {
+		return env.ExpiresAt - now
+	}
+	return wire.PendingTTLSeconds
 }
 
 // onAck 处理 daemon 对决策的确认，标记为已送达，重连时不再重发。

@@ -24,7 +24,10 @@ import (
 //
 // v2(2026-10):Daemon 增 Tier(配额档位)与 LastSeenAt(TTL 清理依据),
 // 无新 bucket;旧 JSON 字段向后兼容。
-const SchemaVersion = 2
+// v3(2026-10):纯增量——Daemon 增 LastIP(WSS 观测源 IP,路由提示用)、
+// Device 增 PushToStartToken(云审批 LA push-to-start token)。
+// 旧记录缺字段解码为零值即可,无需迁移函数。
+const SchemaVersion = 3
 
 // 容量与 TTL（与 pkg/wire 的超时常量保持同一量级）。
 const (
@@ -66,6 +69,9 @@ type Daemon struct {
 	Tier Tier `json:"tier,omitempty"`
 	// LastSeenAt 是 daemon 侧最近活跃时刻(WSS 建连/登记配对会话时刷新),TTL 清理依据。
 	LastSeenAt int64 `json:"last_seen_at,omitempty"`
+	// LastIP 是 relay 从 WSS 连接观测到的源 IP(NAT 后公网地址,仅作路由提示;
+	// 内网直连匹配依赖 daemon 上报的 payload.host_ip)。WSS 建连时刷新。
+	LastIP string `json:"last_ip,omitempty"`
 }
 
 // Tier 是 daemon 的配额档位。
@@ -103,13 +109,16 @@ type PairingSession struct {
 
 // Device 是一台已配对的 iPhone。
 type Device struct {
-	ID         string `json:"id"`
-	DaemonID   string `json:"daemon_id"`
-	CredHash   string `json:"cred_hash"`
-	APNSToken  string `json:"apns_token,omitempty"`
-	Name       string `json:"name"`
-	CreatedAt  int64  `json:"created_at"`
-	LastSeenAt int64  `json:"last_seen_at"`
+	ID        string `json:"id"`
+	DaemonID  string `json:"daemon_id"`
+	CredHash  string `json:"cred_hash"`
+	APNSToken string `json:"apns_token,omitempty"`
+	// PushToStartToken 是云审批 Live Activity 的 push-to-start token
+	// (Activity<CloudApprovalAttributes>.pushToStartToken,App 每次启动重报)。
+	PushToStartToken string `json:"push_to_start_token,omitempty"`
+	Name             string `json:"name"`
+	CreatedAt        int64  `json:"created_at"`
+	LastSeenAt       int64  `json:"last_seen_at"`
 }
 
 // Pending 是一次待审批（或已决策待投递）的审批。
@@ -427,6 +436,19 @@ func (s *Store) TouchDaemon(id string, now int64) error {
 	})
 }
 
+// SetDaemonObservedIP 记录 relay 从 WSS 连接观测到的 daemon 源 IP(WSS 建连时调用)。
+func (s *Store) SetDaemonObservedIP(id, ip string, now int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		var d Daemon
+		if err := getJSON(tx.Bucket(bucketDaemons), id, &d); err != nil {
+			return err
+		}
+		d.LastIP = ip
+		d.LastSeenAt = now
+		return putJSON(tx.Bucket(bucketDaemons), id, d)
+	})
+}
+
 // SetDaemonTier 覆写 daemon 档位(App 权益翻转后经 token 端点上报)。
 // 配额按 Conn.Tier 结算、建连时缓存，改档后由 server 踢连接促重连生效。
 func (s *Store) SetDaemonTier(id string, tier Tier, now int64) error {
@@ -451,6 +473,19 @@ func (s *Store) UpdateDeviceAPNSToken(id, token string, now int64) error {
 		d.APNSToken = token
 		d.LastSeenAt = now
 		return putJSON(tx.Bucket(bucketDevices), id, d)
+	})
+}
+
+// SetPushToStartToken 覆写设备的云审批 LA push-to-start token(App 每次启动重报)。
+func (s *Store) SetPushToStartToken(deviceID, token string, now int64) error {
+	return s.db.Update(func(tx *bolt.Tx) error {
+		var d Device
+		if err := getJSON(tx.Bucket(bucketDevices), deviceID, &d); err != nil {
+			return err
+		}
+		d.PushToStartToken = token
+		d.LastSeenAt = now
+		return putJSON(tx.Bucket(bucketDevices), deviceID, d)
 	})
 }
 
@@ -818,9 +853,14 @@ func (s *Store) LATokensForDaemon(daemonID string) ([]LAToken, error) {
 // ---------- 清理 ----------
 
 // Cleanup 执行 TTL 清理；由 relay 的后台协程周期调用。
-func (s *Store) Cleanup(now int64) error {
-	return s.db.Update(func(tx *bolt.Tx) error {
-		if err := cleanupPending(tx, now); err != nil {
+// 返回本轮从 pending 翻转为 expired 的审批,供调用方合成 approval_closed
+// 事件推送手机(旧 daemon 不发 close,过期收敛由 relay 侧兜底)。
+func (s *Store) Cleanup(now int64) ([]Pending, error) {
+	var expired []Pending
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		var err error
+		expired, err = cleanupPending(tx, now)
+		if err != nil {
 			return err
 		}
 		if err := cleanupInbox(tx, now); err != nil {
@@ -831,11 +871,16 @@ func (s *Store) Cleanup(now int64) error {
 		}
 		return cleanupLATokens(tx, now)
 	})
+	if err != nil {
+		return nil, err
+	}
+	return expired, nil
 }
 
-func cleanupPending(tx *bolt.Tx, now int64) error {
+func cleanupPending(tx *bolt.Tx, now int64) ([]Pending, error) {
 	b := tx.Bucket(bucketPending)
 	var remove [][]byte
+	var expired []Pending
 	if err := b.ForEach(func(k, v []byte) error {
 		var p Pending
 		if err := json.Unmarshal(v, &p); err != nil {
@@ -847,6 +892,7 @@ func cleanupPending(tx *bolt.Tx, now int64) error {
 			if err := putJSON(b, string(k), p); err != nil {
 				return err
 			}
+			expired = append(expired, p)
 			return nil
 		}
 		if now > p.ExpiresAt+int64(PendingGrace.Seconds()) {
@@ -854,14 +900,14 @@ func cleanupPending(tx *bolt.Tx, now int64) error {
 		}
 		return nil
 	}); err != nil {
-		return err
+		return nil, err
 	}
 	for _, k := range remove {
 		if err := b.Delete(k); err != nil {
-			return err
+			return nil, err
 		}
 	}
-	return nil
+	return expired, nil
 }
 
 func cleanupInbox(tx *bolt.Tx, now int64) error {

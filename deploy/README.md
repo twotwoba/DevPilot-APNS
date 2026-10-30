@@ -87,6 +87,20 @@ docker compose pull && docker compose up -d
 The bbolt schema is managed via `meta.schema_version`; there are no breaking
 migrations at the moment. To roll back, point `image:` back at the previous tag.
 
+### v0.3 approval-UX notes (staged category flip)
+
+- v0.3 renames the approval notification category to `DEVPILOT_APPROVAL`
+  (fixing the old `DEVPLOT_APPROVAL` typo). Shipping apps only register the
+  old string, so keep `APNS_CATEGORY=DEVPLOT_APPROVAL` in `.env` until the
+  app update with dual-category registration has rolled out, then drop the
+  line to fall back to the new default.
+- `QUOTA_EXEMPT_APPROVAL_PUSHES=1` (default) exempts approval-scoped pushes
+  (approval alerts + cloud-approval Live Activity) from the UTC daily quota;
+  telemetry Live Activity pushes still count.
+- New REST endpoints: `POST /v1/decisions` (device credential; used by
+  Live Activity buttons and as the notification-action fallback) and
+  push-to-start reporting via `POST /v1/la-tokens {"event":"push_start"}`.
+
 ## 6. Backups
 
 The relay ships a consistent snapshot subcommand (bbolt `View → tx.WriteTo`):

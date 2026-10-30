@@ -97,6 +97,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /ws/app", s.handleAppWS)
 	mux.HandleFunc("POST /v1/la-tokens", s.handleLATokenREST)
 	mux.HandleFunc("GET /v1/pending", s.handlePending)
+	mux.HandleFunc("POST /v1/decisions", s.handleDecisionREST)
 	mux.HandleFunc("POST /v1/devices/token", s.handleDeviceToken)
 	mux.HandleFunc("DELETE /v1/device", s.handleDeleteDevice)
 	mux.HandleFunc("DELETE /v1/daemon", s.handleDeleteDaemon)
@@ -245,8 +246,9 @@ func (s *Server) handleDaemonWS(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusUnauthorized, "invalid daemon credential")
 		return
 	}
-	// 建连即刷新活跃时刻,TTL 清理据此判定存续。
-	if err := s.cfg.Store.TouchDaemon(daemon.ID, s.now().Unix()); err != nil {
+	// 建连即刷新活跃时刻与观测源 IP,TTL 清理据此判定存续;
+	// LastIP 是 NAT 后公网地址,仅作路由提示(内网直连匹配靠 payload.host_ip)。
+	if err := s.cfg.Store.SetDaemonObservedIP(daemon.ID, s.ipOf(r), s.now().Unix()); err != nil {
 		s.log.Warn("failed to touch daemon liveness", "daemon_id", daemon.ID, "err", err)
 	}
 	conn, err := websocket.Accept(w, r, &websocket.AcceptOptions{
@@ -282,6 +284,9 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 
 // ---------- Live Activity / 对账 ----------
 
+// laTokenRequest 是 /v1/la-tokens 的请求体。event=push_start 时上报设备级
+// push-to-start token(云审批 LA 用,session_id 留空);start/update/end 对应
+// 会话级 activity token 的生命周期。
 type laTokenRequest struct {
 	DaemonID  string       `json:"daemon_id"`
 	SessionID string       `json:"session_id"`
@@ -299,12 +304,25 @@ func (s *Server) handleLATokenREST(w http.ResponseWriter, r *http.Request) {
 	if !decodeJSON(w, r, &req) {
 		return
 	}
+	if req.Event == "" {
+		req.Event = wire.LAUpdate
+	}
+	// push_start 上报设备级 token:允许不带 session_id(App 未起任何 activity)。
+	if req.Event == wire.LAPushStart {
+		if req.PushToken == "" {
+			writeError(w, http.StatusBadRequest, "missing push_token")
+			return
+		}
+		if err := s.cfg.Store.SetPushToStartToken(device.ID, req.PushToken, s.now().Unix()); err != nil {
+			s.internal(w, "failed to save push-to-start token", err)
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+		return
+	}
 	if req.DaemonID != device.DaemonID || req.SessionID == "" {
 		writeError(w, http.StatusBadRequest, "invalid la_token parameters")
 		return
-	}
-	if req.Event == "" {
-		req.Event = wire.LAUpdate
 	}
 	switch req.Event {
 	case wire.LAStart, wire.LAUpdate:
@@ -361,6 +379,40 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 		result.NextCursor = strconv.FormatInt(next, 10)
 	}
 	writeJSON(w, http.StatusOK, result)
+}
+
+// ---------- 决策(LA 按钮 / 通知快捷钮的 REST 通道) ----------
+
+type decisionRequest struct {
+	ApprovalID string `json:"approval_id"`
+	Decision   string `json:"decision"`
+}
+
+// handleDecisionREST 是 App 侧无需 WSS 的决策入口:LA 按钮(App Intent 进程)与
+// 通知快捷钮在网络在而 WSS 断连时的回落通道。语义与 WSS decision 完全一致
+// (first-wins、合成 close、daemon 离线则待补发),经 Hub.ApplyDeviceDecision 共路。
+func (s *Server) handleDecisionREST(w http.ResponseWriter, r *http.Request) {
+	device, ok := s.authDevice(r)
+	if !ok {
+		writeError(w, http.StatusUnauthorized, "invalid device credential")
+		return
+	}
+	var req decisionRequest
+	if !decodeJSON(w, r, &req) {
+		return
+	}
+	decision := wire.DecisionKind(strings.TrimSpace(req.Decision))
+	if strings.TrimSpace(req.ApprovalID) == "" || !decision.Valid() {
+		writeError(w, http.StatusBadRequest, "approval_id and decision (allow|deny) are required")
+		return
+	}
+	status, err := s.cfg.Hub.ApplyDeviceDecision(device.DaemonID, strings.TrimSpace(req.ApprovalID), decision, s.now().Unix())
+	if err != nil {
+		s.internal(w, "failed to apply decision", err)
+		return
+	}
+	s.cfg.Metrics.IncDecision(string(decision), string(status))
+	writeJSON(w, http.StatusOK, map[string]string{"status": string(status)})
 }
 
 // ---------- 生命周期 ----------

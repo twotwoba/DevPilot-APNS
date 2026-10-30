@@ -119,6 +119,9 @@ const (
 	LAStart  LAEvent = "start"
 	LAUpdate LAEvent = "update"
 	LAEnd    LAEvent = "end"
+	// LAPushStart 是 REST /v1/la-tokens 专用事件:上报设备的 push-to-start token
+	// (云审批 LA 在 App 被杀时由此 token 起卡)。WSS la_token 消息不使用。
+	LAPushStart LAEvent = "push_start"
 )
 
 // Payload 是云通道允许传输的摘要白名单。

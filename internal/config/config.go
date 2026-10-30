@@ -23,6 +23,10 @@ type Config struct {
 	APNSLiveActivityTopic string
 	APNSEnvironment       string
 	APNSMock              bool
+	// APNSCategory 是审批通知的 category 标识。默认 DEVPILOT_APPROVAL(修正拼写);
+	// 存量 App 只注册旧串 DEVPLOT_APPROVAL,App 新版上线前部署侧应显式设旧值,
+	// 新版铺开后再移除该 env 回归默认。
+	APNSCategory string
 
 	// —— 托管多租户:per-daemon 配额(0=关闭对应闸)——
 	RateEventFree   int           // free 档每窗口事件数
@@ -32,6 +36,10 @@ type Config struct {
 	QuotaDailyPro   int64         // pro 档 UTC 日推送上限
 	// QuotaExemptApprovals 时审批类事件豁免速率闸(不豁免日配额)。
 	QuotaExemptApprovals bool
+	// QuotaExemptApprovalPushes 时审批范围推送(approval alert + 云审批 LA)豁免
+	// UTC 日配额:免费档 10 条/日几分钟就会被 LA 更新烧穿,旗舰审批不能被配额哑掉。
+	// 关闭则恢复全面计数(遥测 LA 始终计数)。
+	QuotaExemptApprovalPushes bool
 
 	// —— 生命周期 TTL(天;0=禁用,首发部署保持 0 观察)——
 	DaemonTTLDays int
@@ -61,6 +69,7 @@ func FromEnv() (*Config, error) {
 		APNSBundleID:          env("APNS_BUNDLE_ID", "com.twotwoba.devpilot"),
 		APNSLiveActivityTopic: env("APNS_LIVEACTIVITY_TOPIC", "com.twotwoba.devpilot.push-type.liveactivity"),
 		APNSEnvironment:       env("APNS_ENVIRONMENT", "production"),
+		APNSCategory:          env("APNS_CATEGORY", "DEVPILOT_APPROVAL"),
 	}
 	mock, err := strconv.ParseBool(env("APNS_MOCK", "false"))
 	if err != nil {
@@ -87,6 +96,9 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	if c.QuotaExemptApprovals, err = envBool("QUOTA_EXEMPT_APPROVALS", true); err != nil {
+		return nil, err
+	}
+	if c.QuotaExemptApprovalPushes, err = envBool("QUOTA_EXEMPT_APPROVAL_PUSHES", true); err != nil {
 		return nil, err
 	}
 	if c.DaemonTTLDays, err = envInt("DAEMON_TTL_DAYS", 0); err != nil {

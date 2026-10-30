@@ -226,10 +226,18 @@ func TestLiveActivityThrottleLatestWins(t *testing.T) {
 	time.Sleep(300 * time.Millisecond)
 
 	calls := f.snapshot()
-	if len(calls) > 2 {
-		t.Fatalf("too many pushes within 1s: %d", len(calls))
+	// 只统计会话进度卡(legacy LA)的推送:云审批卡走独立节流键,session_ended
+	// 会另发一条 end,不属本测试的节流断言范围。
+	var legacy []apns.Request
+	for _, c := range calls {
+		if _, ok := c.Payload.(wire.LiveActivityPush); ok {
+			legacy = append(legacy, c)
+		}
 	}
-	last := calls[len(calls)-1]
+	if len(legacy) > 2 {
+		t.Fatalf("too many pushes within 1s: %d", len(legacy))
+	}
+	last := legacy[len(legacy)-1]
 	if last.PushType != "liveactivity" || last.Topic != laTopic || last.DeviceToken != "la-token" {
 		t.Fatalf("last = %+v", last)
 	}
@@ -379,5 +387,313 @@ func TestThrottlerLatestWins(t *testing.T) {
 	}
 	if ran[len(ran)-1] != 2 {
 		t.Fatalf("latest action did not win: %v", ran)
+	}
+}
+
+// TestApprovalClosedReplacementAlert close 替换推送:同 collapse-id 让已投递
+// 横幅「变脸」,无声、无打断级别、60s 短过期,正文按 close reason 映射。
+func TestApprovalClosedReplacementAlert(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	f := &fakePusher{}
+	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, time.Second)
+
+	cases := []struct {
+		reason string
+		body   string
+	}{
+		{wire.CloseReasonApproved, "Approved"},
+		{wire.CloseReasonDenied, "Denied"},
+		{wire.CloseReasonExpired, "Missed approval — open the session to continue"},
+		{wire.CloseReasonCancelled, "Answered at terminal"},
+	}
+	for i, c := range cases {
+		env := event(wire.EventApprovalClosed, "apv_1")
+		env.Payload.StatusText = c.reason
+		d.Notify(context.Background(), dev, env)
+		calls := f.snapshot()
+		if len(calls) != i+1 {
+			t.Fatalf("calls = %d after %s", len(calls), c.reason)
+		}
+		req := calls[i]
+		if req.PushType != "alert" || req.Priority != 10 || req.Expiration != testNow+closeExpiry {
+			t.Fatalf("params = %+v", req)
+		}
+		if req.CollapseID != "apv-apv_1" {
+			t.Fatalf("collapse = %q (must replace the original approval banner)", req.CollapseID)
+		}
+		aps := req.Payload.(map[string]any)["aps"].(map[string]any)
+		if _, ok := aps["sound"]; ok {
+			t.Fatal("replacement push must be silent")
+		}
+		if _, ok := aps["interruption-level"]; ok {
+			t.Fatal("replacement push must not interrupt")
+		}
+		if aps["thread-id"] != "approval" {
+			t.Fatalf("aps = %+v", aps)
+		}
+		if got := aps["alert"].(map[string]string)["body"]; got != c.body {
+			t.Fatalf("body = %q, want %q", got, c.body)
+		}
+	}
+}
+
+// TestApprovalAlertEnrichment expires_at/主机富集键透传,APNs 过期对齐等待窗;
+// category 配置化:配置后用新串,未配置回落旧串(存量 App 分期切换)。
+func TestApprovalAlertEnrichment(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	f := &fakePusher{}
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	d := New(Config{
+		Store: s, Pusher: f, Metrics: metrics.New(), Now: clock.Now, Throttle: time.Second,
+		APNSCategory: "DEVPILOT_APPROVAL",
+	})
+
+	env := event(wire.EventApprovalRequired, "apv_1")
+	env.ExpiresAt = testNow + 1800
+	env.Payload.Hostname = "Erics-MacBook.local"
+	env.Payload.TmuxSession = "main"
+	env.Payload.Cwd = "/Users/eric/Desktop/DevPilot"
+	d.Notify(context.Background(), dev, env)
+
+	calls := f.snapshot()
+	if len(calls) != 1 {
+		t.Fatalf("calls = %d", len(calls))
+	}
+	if req := calls[0]; req.Expiration != testNow+1800 {
+		t.Fatalf("expiration = %d, want wait-window end", req.Expiration)
+	}
+	payload := calls[0].Payload.(map[string]any)
+	if payload["hostname"] != "Erics-MacBook.local" ||
+		payload["tmux_session"] != "main" ||
+		payload["cwd"] != "/Users/eric/Desktop/DevPilot" ||
+		payload["expires_at"] != int64(testNow+1800) {
+		t.Fatalf("enrichment keys = %+v", payload)
+	}
+	if aps := payload["aps"].(map[string]any); aps["category"] != "DEVPILOT_APPROVAL" {
+		t.Fatalf("category = %v", aps["category"])
+	}
+
+	// 未配置 category → 回落旧串(存量 App 只注册旧 category)。
+	f2 := &fakePusher{}
+	d2 := New(Config{Store: s, Pusher: f2, Metrics: metrics.New(), Now: clock.Now, Throttle: time.Second})
+	d2.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_2"))
+	aps2 := f2.snapshot()[0].Payload.(map[string]any)["aps"].(map[string]any)
+	if aps2["category"] != legacyApprovalCategory {
+		t.Fatalf("fallback category = %v", aps2["category"])
+	}
+}
+
+// TestApprovalPushesExemptFromDailyQuota 审批范围推送豁免日配额(默认开):
+// 免费档 1 条/日也能连发审批 alert 与 close 替换,审批不因配额哑火。
+func TestApprovalPushesExemptFromDailyQuota(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	f := &fakePusher{}
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	eng := quota.New(quota.Config{QuotaDailyFree: 1, Now: clock.Now})
+	m := metrics.New()
+	d := New(Config{Store: s, Pusher: f, Metrics: m, Quota: eng, Now: clock.Now,
+		Throttle: time.Second, QuotaExemptApprovalPushes: true})
+
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_1"))
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_2"))
+	closeEnv := event(wire.EventApprovalClosed, "apv_1")
+	closeEnv.Payload.StatusText = wire.CloseReasonApproved
+	d.Notify(context.Background(), dev, closeEnv)
+	if calls := f.snapshot(); len(calls) != 3 {
+		t.Fatalf("approval-scope pushes should bypass daily quota: %d", len(calls))
+	}
+	// HELP 头对零值指标也会出现,须匹配样本行。
+	if strings.Contains(m.Render(), "devpilot_quota_rejected_total{") {
+		t.Fatalf("unexpected quota rejection:\n%s", m.Render())
+	}
+}
+
+// TestTelemetryLAStillQuotaCounted 豁免只覆盖审批范围:遥测 LA 照常计数扣配额。
+func TestTelemetryLAStillQuotaCounted(t *testing.T) {
+	s, dev := setupStore(t, "")
+	if err := s.PutLAToken(store.LAToken{
+		DeviceID: dev.ID, DaemonID: testDaemon, SessionID: "sess_1",
+		PushToken: "la-token", UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakePusher{}
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	eng := quota.New(quota.Config{QuotaDailyFree: 1, Now: clock.Now})
+	m := metrics.New()
+	d := New(Config{Store: s, Pusher: f, Metrics: m, Quota: eng, Now: clock.Now,
+		Throttle: 10 * time.Millisecond, QuotaExemptApprovalPushes: true})
+
+	d.Notify(context.Background(), dev, event(wire.EventToolRunning, ""))
+	waitFor(t, "first LA push", func() bool { return len(f.snapshot()) == 1 })
+	d.Notify(context.Background(), dev, event(wire.EventToolFinished, ""))
+	time.Sleep(100 * time.Millisecond)
+	if calls := f.snapshot(); len(calls) != 1 {
+		t.Fatalf("telemetry LA should still consume quota: %d", len(calls))
+	}
+	if !strings.Contains(m.Render(), `devpilot_quota_rejected_total{kind="push_liveactivity"} 1`) {
+		t.Fatalf("metrics missing LA quota rejection:\n%s", m.Render())
+	}
+}
+
+// TestCloudApprovalPushToStart 设备级 push-to-start:无会话 token 时
+// approval_required 由 relay 发 start 起卡(attributes-type 必带、stale 对齐
+// 等待窗);close 无卡可收,只发通知替换,不碰设备级 token。
+func TestCloudApprovalPushToStart(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	if err := s.SetPushToStartToken(dev.ID, "pts-token", testNow); err != nil {
+		t.Fatal(err)
+	}
+	// Notify 拿到的是事件时刻的设备快照(生产路径 notify() 现查 store),重取。
+	dev, err := s.Device(dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakePusher{}
+	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, time.Second)
+
+	env := event(wire.EventApprovalRequired, "apv_1")
+	env.ExpiresAt = testNow + 1800
+	env.Payload.Hostname = "Erics-MacBook.local"
+	d.Notify(context.Background(), dev, env)
+
+	calls := f.snapshot()
+	var cloud apns.Request
+	sawLA := false
+	for _, c := range calls {
+		if c.PushType == "liveactivity" {
+			sawLA = true
+			cloud = c
+		}
+	}
+	if !sawLA {
+		t.Fatalf("push-to-start LA push missing: %+v", calls)
+	}
+	if cloud.DeviceToken != "pts-token" || cloud.Topic != laTopic || cloud.Priority != 10 {
+		t.Fatalf("cloud push params = %+v", cloud)
+	}
+	push, ok := cloud.Payload.(wire.CloudApprovalPush)
+	if !ok {
+		t.Fatalf("payload type = %T", cloud.Payload)
+	}
+	if push.APS.Event != "start" || push.APS.AttributesType != wire.CloudApprovalAttributesType {
+		t.Fatalf("aps = %+v", push.APS)
+	}
+	if push.APS.Attributes["sessionId"] != "sess_1" || push.APS.Attributes["daemonId"] != testDaemon {
+		t.Fatalf("attributes = %+v", push.APS.Attributes)
+	}
+	st := push.APS.ContentState
+	if st.State != wire.CloudStateNeedsYou || st.ExpiresAt != testNow+1800 ||
+		st.HostName != "Erics-MacBook.local" || st.ApprovalID != "apv_1" {
+		t.Fatalf("content-state = %+v", st)
+	}
+	if push.APS.StaleDate != testNow+1800+60 {
+		t.Fatalf("stale-date = %d", push.APS.StaleDate)
+	}
+
+	// close:只新增替换 alert,不再向设备级 token 发 LA。
+	before := len(f.snapshot())
+	closeEnv := event(wire.EventApprovalClosed, "apv_1")
+	closeEnv.Payload.StatusText = wire.CloseReasonApproved
+	d.Notify(context.Background(), dev, closeEnv)
+	if calls = f.snapshot(); len(calls) != before+1 {
+		t.Fatalf("close should only add the replacement alert: %d -> %d", before, len(calls))
+	}
+	if added := calls[len(calls)-1]; added.PushType != "alert" {
+		t.Fatalf("added push = %+v", added)
+	}
+}
+
+// TestPushToStartPruneOn410 push-to-start token 失效(APNs 410)时立即剪枝,
+// 等待 App 下次启动重报。
+func TestPushToStartPruneOn410(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	if err := s.SetPushToStartToken(dev.ID, "pts-token", testNow); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := s.Device(dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	f := &fakePusher{respond: func(req apns.Request) (apns.Result, error) {
+		if req.PushType == "liveactivity" {
+			return apns.Result{Status: 410, Reason: "Unregistered", Prune: true}, nil
+		}
+		return apns.Result{Status: 200}, nil
+	}}
+	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, time.Second)
+
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_1"))
+	got, err := s.Device(dev.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.PushToStartToken != "" {
+		t.Fatalf("stale push-to-start token not cleared: %q", got.PushToStartToken)
+	}
+}
+
+// TestCloudApprovalSessionTokenPreferred 会话级 token(App 前台起卡)优先于
+// push-to-start:approval_required 走 update(无 start 属性),close 走
+// end(dismissal-date = now+5)。
+func TestCloudApprovalSessionTokenPreferred(t *testing.T) {
+	s, dev := setupStore(t, "")
+	if err := s.SetPushToStartToken(dev.ID, "pts-token", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutLAToken(store.LAToken{
+		DeviceID: dev.ID, DaemonID: testDaemon, SessionID: "sess_1",
+		PushToken: "la-token", UpdatedAt: testNow,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	f := &fakePusher{}
+	d, _ := newDeliverer(t, s, f, &testClock{t: time.Unix(testNow, 0)}, 10*time.Millisecond)
+
+	d.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_1"))
+	waitFor(t, "cloud update push", func() bool { return len(f.snapshot()) >= 2 })
+
+	time.Sleep(50 * time.Millisecond) // 越过节流间隔,让 close 的 end 推送放行
+	closeEnv := event(wire.EventApprovalClosed, "apv_1")
+	closeEnv.Payload.StatusText = wire.CloseReasonDenied
+	d.Notify(context.Background(), dev, closeEnv)
+	waitFor(t, "cloud end push", func() bool {
+		for _, c := range f.snapshot() {
+			if p, ok := c.Payload.(wire.CloudApprovalPush); ok && p.APS.Event == "end" {
+				return true
+			}
+		}
+		return false
+	})
+
+	var update, end wire.CloudApprovalPush
+	var endReq apns.Request
+	for _, c := range f.snapshot() {
+		p, ok := c.Payload.(wire.CloudApprovalPush)
+		if !ok {
+			continue
+		}
+		switch p.APS.Event {
+		case "update":
+			update = p
+		case "end":
+			end = p
+			endReq = c
+		}
+	}
+	if update.APS.AttributesType != "" || update.APS.Attributes != nil {
+		t.Fatalf("session-token update must not carry start attributes: %+v", update.APS)
+	}
+	if update.APS.ContentState.State != wire.CloudStateNeedsYou {
+		t.Fatalf("update state = %+v", update.APS.ContentState)
+	}
+	if end.APS.ContentState.State != wire.CloudStateDenied {
+		t.Fatalf("end state = %+v", end.APS.ContentState)
+	}
+	if end.APS.DismissalDate != testNow+5 {
+		t.Fatalf("dismissal-date = %d", end.APS.DismissalDate)
+	}
+	if endReq.DeviceToken != "la-token" {
+		t.Fatalf("end push should target the session token: %+v", endReq)
 	}
 }

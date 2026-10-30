@@ -166,7 +166,7 @@ func TestInboxTTLCleanup(t *testing.T) {
 	if _, _, err := s.AppendInbox(daemonID, approvalEvent("ev_1", "apv_1"), testNow); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.Cleanup(testNow + int64(InboxTTL.Seconds()) + 1); err != nil {
+	if _, err := s.Cleanup(testNow + int64(InboxTTL.Seconds()) + 1); err != nil {
 		t.Fatal(err)
 	}
 	events, _, err := s.InboxSince(daemonID, 0, 0, 10)
@@ -500,5 +500,93 @@ func TestCleanupIdentities(t *testing.T) {
 	// TTL=0 全禁用,零操作。
 	if n, m, err := s.CleanupIdentities(fresh+10*day, 0, 0); err != nil || n != 0 || m != 0 {
 		t.Fatalf("should be a no-op when disabled: (%d,%d) %v", n, m, err)
+	}
+}
+
+// TestCleanupReturnsExpiredPendings Cleanup 返回本轮新翻转 expired 的 pending,
+// 供清理循环为旧 daemon 合成 approval_closed;已决与未到期者不出现在返回里,
+// 重复清理幂等不重复返回。
+func TestCleanupReturnsExpiredPendings(t *testing.T) {
+	s := newStore(t)
+	daemonID := "dd_0123456789abcdef0123456789abcdef"
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonID)
+
+	seed := func(approvalID string, expires int64, decide bool) {
+		t.Helper()
+		ev := approvalEvent("ev_"+approvalID, approvalID)
+		if _, _, err := s.AppendInbox(daemonID, ev, testNow); err != nil {
+			t.Fatal(err)
+		}
+		if err := s.PutPending(Pending{
+			ApprovalID: approvalID, DaemonID: daemonID, Event: ev, Status: "pending",
+			CreatedAt: testNow, ExpiresAt: expires,
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if decide {
+			if _, _, err := s.ApplyDecision(approvalID, daemonID, "approved", testNow+1); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	seed("apv_late", testNow+3600, false)
+	seed("apv_due", testNow+300, false)
+	seed("apv_done", testNow+300, true)
+
+	expired, err := s.Cleanup(testNow + 301)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(expired) != 1 || expired[0].ApprovalID != "apv_due" || expired[0].Status != "expired" {
+		t.Fatalf("expired = %+v", expired)
+	}
+	if p, err := s.GetPending("apv_due"); err != nil || p.Status != "expired" {
+		t.Fatalf("pending not flipped: %+v err=%v", p, err)
+	}
+	if again, err := s.Cleanup(testNow + 301); err != nil || len(again) != 0 {
+		t.Fatalf("repeat cleanup = %+v err=%v", again, err)
+	}
+}
+
+// TestSchemaV3AdditiveFields v3 增量字段(Daemon.LastIP / Device.PushToStartToken)
+// 写入后跨重启持久;剪枝(置空)路径生效。纯增量 JSON 免迁移。
+func TestSchemaV3AdditiveFields(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "relay.db")
+	s, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	daemonID := "dd_0123456789abcdef0123456789abcdef"
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonID)
+	_, dev := pairDevice(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ")
+	if err := s.SetDaemonObservedIP(daemonID, "203.0.113.9", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetPushToStartToken(dev.ID, "pts-token", testNow); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	s2, err := Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s2.Close()
+	d, err := s2.Daemon(daemonID)
+	if err != nil || d.LastIP != "203.0.113.9" {
+		t.Fatalf("daemon = %+v err=%v", d, err)
+	}
+	got, err := s2.Device(dev.ID)
+	if err != nil || got.PushToStartToken != "pts-token" {
+		t.Fatalf("device = %+v err=%v", got, err)
+	}
+	// 410 剪枝路径:置空。
+	if err := s2.SetPushToStartToken(dev.ID, "", testNow+1); err != nil {
+		t.Fatal(err)
+	}
+	if got, err = s2.Device(dev.ID); err != nil || got.PushToStartToken != "" {
+		t.Fatalf("push-to-start token not cleared: %+v err=%v", got, err)
 	}
 }
