@@ -9,7 +9,7 @@
 
 services:
   relay:
-    image: ghcr.io/twotwoba/devpilot-relay:0.2
+    image: ghcr.io/twotwoba/devpilot-relay:0.3
     container_name: devpilot-relay
     restart: unless-stopped
     env_file:
