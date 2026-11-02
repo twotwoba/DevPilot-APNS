@@ -19,6 +19,7 @@
     "hostname": "Erics-MacBook-Pro.local",
     "host_ip": "192.168.1.23",
     "tmux_session": "DevPilot",
+    "tmux_window": "2",
     "user": "eric",
     "cwd": "/Users/eric/Desktop/DevPilot"
   },

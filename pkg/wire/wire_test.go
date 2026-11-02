@@ -270,3 +270,31 @@ func TestHelloValidation(t *testing.T) {
 		t.Fatal("daemon 缺少 daemon_id 应报错")
 	}
 }
+
+// TestPayloadTmuxWindowOmitEmpty 钉 tmux_window 的加性契约:空值不落键
+// (旧 daemon/旧 App parity),非空原样往返。
+func TestPayloadTmuxWindowOmitEmpty(t *testing.T) {
+	without, err := Encode(&Envelope{V: Version, Kind: KindEvent, MsgID: "m", EventID: "e",
+		Type: EventApprovalRequired, Agent: AgentClaude, DaemonID: "dd", SessionID: "s", Seq: 1, TS: 1,
+		Payload: Payload{Title: "t"}})
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if strings.Contains(string(without), "tmux_window") {
+		t.Fatal("空 TmuxWindow 不应落键")
+	}
+	env := Envelope{V: Version, Kind: KindEvent, MsgID: "m", EventID: "e",
+		Type: EventApprovalRequired, Agent: AgentClaude, DaemonID: "dd", SessionID: "s", Seq: 1, TS: 1,
+		Payload: Payload{TmuxWindow: "2"}}
+	with, err := Encode(&env)
+	if err != nil {
+		t.Fatalf("编码失败: %v", err)
+	}
+	if !strings.Contains(string(with), `"tmux_window":"2"`) {
+		t.Fatalf("非空 TmuxWindow 应落键: %s", with)
+	}
+	var back Envelope
+	if err := json.Unmarshal(with, &back); err != nil || back.Payload.TmuxWindow != "2" {
+		t.Fatalf("往返丢失 TmuxWindow: %v %q", err, back.Payload.TmuxWindow)
+	}
+}

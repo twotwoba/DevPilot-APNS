@@ -159,6 +159,10 @@ type Payload struct {
 	// TmuxSession 是审批发生时所在 tmux 会话名（tmux display-message -p '#S'），
 	// App 用于直进/attach 对应会话。
 	TmuxSession string `json:"tmux_session,omitempty"`
+	// TmuxWindow 是审批发生时所在 tmux 窗口序号（#{window_index}，数字串），
+	// 仅 App 详情抽屉展示；不参与路由，不进 APNs 手搓 map（deliverer 不加）。
+	// v0.3.1 增量字段。
+	TmuxWindow string `json:"tmux_window,omitempty"`
 	// User 是 hook 进程的 $USER，一键补建主机时预填用户名。
 	User string `json:"user,omitempty"`
 	// Cwd 是会话完整工作目录：仅用于 App 端会话/项目匹配，不进入通知文案。
