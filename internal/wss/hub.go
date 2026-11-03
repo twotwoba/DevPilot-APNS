@@ -201,8 +201,12 @@ func (h *Hub) handshake(ctx context.Context, c *Conn) bool {
 		h.replayDecisions(c)
 	case wire.RoleApp:
 		if hello.Resync {
+			// 对账游标随行（2026-11-03）：App 上报上次对账的最新 seq，回放从
+			// 游标之后起；空 = 全新档回最新窗口。旧版 App 无此键 = 零游标，
+			// 行为与旧版一致（从最老事件起的有界回放）
 			h.sendResync(c, wire.Resync{
-				V: wire.Version, Kind: wire.KindResync, MsgID: id.New(), TS: h.now().Unix(),
+				V: wire.Version, Kind: wire.KindResync, MsgID: id.New(),
+				Cursor: hello.Cursor, TS: h.now().Unix(),
 			})
 		}
 	}

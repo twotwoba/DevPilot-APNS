@@ -222,7 +222,11 @@ type Hello struct {
 	DeviceID   string `json:"device_id,omitempty"`
 	LastAckSeq int64  `json:"last_ack_seq,omitempty"`
 	Resync     bool   `json:"resync,omitempty"`
-	TS         int64  `json:"ts"`
+	// Cursor 是 App 上次对账的最新事件 seq（resync_result.next_cursor 回传值）。
+	// resync 对账按此回放「之后」的最新窗口；空 = 全新档，回最新 resyncLimit 条。
+	// 旧版 App 不发此键（json 忽略未知键），对账退化为零游标 = 旧行为，加性演进
+	Cursor string `json:"cursor,omitempty"`
+	TS     int64  `json:"ts"`
 }
 
 // HelloAck 是服务端对 Hello 的确认。

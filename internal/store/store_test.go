@@ -150,12 +150,49 @@ func TestInboxSeqAndDedup(t *testing.T) {
 	}
 
 	events, next, err := s.InboxSince(daemonID, 0, 0, 1)
-	if err != nil || len(events) != 1 || events[0].Seq != 1 || next != 1 {
-		t.Fatalf("events=%+v next=%d err=%v", events, next, err)
+	// 最新窗口语义：limit 截断回最新 1 条（seq 2），next = 窗口内最新 seq
+	if err != nil || len(events) != 1 || events[0].Seq != 2 || next != 2 {
+		t.Fatalf("tail window events=%+v next=%d err=%v", events, next, err)
+	}
+	// 游标推进后 = 全新事件为空，next 归零
+	events, next, err = s.InboxSince(daemonID, next, 0, 10)
+	if err != nil || len(events) != 0 || next != 0 {
+		t.Fatalf("page 2 events=%+v next=%d err=%v", events, next, err)
+	}
+}
+
+// 最新窗口回归（2026-11-03）：离线积压超 limit 时回放最新的 limit 条且窗口
+// 内升序，游标推进单调向前——旧实现每次回最早 limit 条，后台期新事件永远
+// 进不了对账窗（真机实锤「能收横幅但收件箱没行」）。
+func TestInboxSinceTailWindow(t *testing.T) {
+	s := newStore(t)
+	daemonID := "dd_0123456789abcdef0123456789abcdef"
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonID)
+
+	for i := 1; i <= 5; i++ {
+		if _, _, err := s.AppendInbox(daemonID, approvalEvent(fmt.Sprintf("ev_%d", i), fmt.Sprintf("apv_%d", i)), testNow); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	events, next, err := s.InboxSince(daemonID, 0, 0, 2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(events) != 2 || events[0].Seq != 4 || events[1].Seq != 5 {
+		t.Fatalf("tail = seq 4,5, got %+v", events)
+	}
+	if next != 5 {
+		t.Fatalf("next = 窗口最新 seq 5, got %d", next)
+	}
+
+	// 游标=5 之后新到的事件才回放；窗口内升序保持
+	if _, _, err := s.AppendInbox(daemonID, approvalEvent("ev_6", "apv_6"), testNow); err != nil {
+		t.Fatal(err)
 	}
 	events, next, err = s.InboxSince(daemonID, next, 0, 10)
-	if err != nil || len(events) != 1 || events[0].Seq != 2 || next != 0 {
-		t.Fatalf("page 2 events=%+v next=%d err=%v", events, next, err)
+	if err != nil || len(events) != 1 || events[0].Seq != 6 || next != 6 {
+		t.Fatalf("increment events=%+v next=%d err=%v", events, next, err)
 	}
 }
 

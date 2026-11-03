@@ -637,9 +637,12 @@ func (s *Store) AppendInbox(daemonID string, env wire.Envelope, now int64) (wire
 	return env, duplicate, err
 }
 
-// InboxSince 返回 afterSeq 之后、且 TS >= since 的收件箱条目。
-//
-// limit 控制单次返回量，next 为下一页游标（0 表示没有更多）。
+// InboxSince 返回 afterSeq 之后、且 TS >= since 的收件箱条目——**最新窗口**
+// 语义：匹配条目多于 limit 时返回最新 limit 条。收件箱对账要的是「当前活动
+// 快照」，冷启动/长离线回来的 App 要最新状态而不是从最老事件起的有界回放
+// （旧实现每次回放最早的 limit 条，后台期新事件永远进不了对账窗——2026-11-03
+// 真机实锤的「能收横幅但收件箱没行」根因）。条目受 MaxInboxPerDaemon 上限
+// 约束，单次收集量有界。next = 窗口内最新一条的 seq（游标推进真源；空窗为 0）。
 func (s *Store) InboxSince(daemonID string, afterSeq, since int64, limit int) ([]wire.Envelope, int64, error) {
 	if limit <= 0 {
 		limit = 200
@@ -661,11 +664,13 @@ func (s *Store) InboxSince(daemonID string, afterSeq, since int64, limit int) ([
 			if since > 0 && entry.Envelope.TS < since {
 				continue
 			}
-			if len(out) >= limit {
-				next = out[len(out)-1].Seq
-				return nil
-			}
 			out = append(out, entry.Envelope)
+		}
+		if len(out) > limit {
+			out = out[len(out)-limit:]
+		}
+		if len(out) > 0 {
+			next = out[len(out)-1].Seq
 		}
 		return nil
 	})
