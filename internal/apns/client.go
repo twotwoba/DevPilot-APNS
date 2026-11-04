@@ -67,10 +67,6 @@ type Result struct {
 	APNSID  string
 	Prune   bool
 	Skipped bool
-	// EnvFallback 表示本次受理来自对端环境端点（token 环境与主端点不符时
-	// 的自动回退）；监控据此观察 TestFlight development 包与 App Store 包
-	// 共存的比例。
-	EnvFallback bool
 }
 
 // Accepted 表示 APNs 已受理。
@@ -87,10 +83,6 @@ type Config struct {
 	Mock              bool
 	// Endpoint 仅用于测试注入（假 APNs 服务器）；为空时按 Environment 选择。
 	Endpoint string
-	// AlternateEndpoint 是环境回退用的对端端点，仅测试注入；为空时按
-	// Environment 推导（production↔sandbox 互换）。见 Send 的
-	// BadEnvironmentKeyInToken 回退分支。
-	AlternateEndpoint string
 	// HTTPClient 允许测试注入信任假服务器证书的 client。
 	HTTPClient *http.Client
 	// RetryBase 是 5xx / 传输错误的首次退避，默认 500ms。
@@ -234,10 +226,8 @@ func (c *Client) Send(ctx context.Context, req Request) (Result, error) {
 		return Result{Skipped: true, Reason: "topic-backoff"}, nil
 	}
 
-	// 环境回退只许一次：主端点 403 BadEnvironmentKeyInToken 后换对端再试。
-	envFallback := false
 	for attempt := 0; ; attempt++ {
-		res, err := c.sendOnce(ctx, req, payload, envFallback)
+		res, err := c.sendOnce(ctx, req, payload)
 		if err != nil {
 			if attempt < maxAttempts-1 && ctx.Err() == nil {
 				if !sleepCtx(ctx, c.cfg.RetryBase<<attempt) {
@@ -250,7 +240,6 @@ func (c *Client) Send(ctx context.Context, req Request) (Result, error) {
 		switch {
 		case res.Accepted():
 			c.resetBackoff(req.Topic)
-			res.EnvFallback = envFallback
 			return res, nil
 		case res.Status == http.StatusTooManyRequests:
 			delay := c.bumpBackoff(req.Topic, c.now())
@@ -273,12 +262,6 @@ func (c *Client) Send(ctx context.Context, req Request) (Result, error) {
 			// 本机时钟跳变或缓存 JWT 被拒：强制换新 token 再试一次。
 			c.invalidateToken()
 			continue
-		case res.Status == http.StatusForbidden && res.Reason == "BadEnvironmentKeyInToken" && !envFallback:
-			// token 环境与主端点不符（TestFlight development 包与 App Store
-			// 包共存的常态，2026-11-04 真机实锤）：换对端环境端点补一枪，
-			// 一条推送只回退一次；回退后仍被拒则按不可重试交投递层。
-			envFallback = true
-			continue
 		default:
 			// 400 / 403 / 410 等不可重试，交给投递层分类处理。
 			return res, nil
@@ -293,7 +276,7 @@ func (c *Client) recordMock(req Request, payload []byte) Result {
 	return Result{Status: http.StatusOK, APNSID: fmt.Sprintf("mock-%d", len(c.calls))}
 }
 
-func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte, altEnv bool) (Result, error) {
+func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte) (Result, error) {
 	token, err := c.authToken()
 	if err != nil {
 		return Result{}, err
@@ -306,11 +289,7 @@ func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte, altE
 		return Result{}, ctx.Err()
 	}
 
-	base := c.endpoint()
-	if altEnv {
-		base = c.alternateEndpoint()
-	}
-	url := base + "/3/device/" + req.DeviceToken
+	url := c.endpoint() + "/3/device/" + req.DeviceToken
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return Result{}, fmt.Errorf("apns: failed to build request: %w", err)
@@ -393,17 +372,6 @@ func (c *Client) endpoint() string {
 		return sandboxEndpoint
 	}
 	return productionEndpoint
-}
-
-// alternateEndpoint 返回环境回退端点：显式注入优先，否则与 Environment 对互换。
-func (c *Client) alternateEndpoint() string {
-	if c.cfg.AlternateEndpoint != "" {
-		return strings.TrimRight(c.cfg.AlternateEndpoint, "/")
-	}
-	if c.cfg.Environment == "sandbox" {
-		return productionEndpoint
-	}
-	return sandboxEndpoint
 }
 
 // TopicFor 返回普通通知的 topic。
