@@ -134,6 +134,13 @@ automatically):
    automatically on their next app cold start (24 h throttled tier re-sync)
    or the next entitlement flip.
 
+> **Official deployment status**: steps 2–4 completed 2026-11-04 during the
+> pre-launch beta window (zero members, sweep count = 0), with
+> `JWS_ALLOWED_ENVIRONMENTS=Production,Sandbox` because TestFlight IAP lives
+> in the Sandbox environment. **After public launch** tighten it back to
+> `Production` — and never re-add `RESET_TIERS_ON_BOOT` once real members
+> exist: it wipes every daemon tier on boot.
+
 Verification failure semantics: pairing never fails on tier — an unverifiable
 pro claim silently pairs as free (response echoes the applied `tier`);
 `/v1/devices/token` upgrading to pro without a valid receipt returns 422 and
