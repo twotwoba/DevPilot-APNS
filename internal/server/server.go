@@ -7,12 +7,16 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"net"
 	"net/http"
+	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -65,6 +69,9 @@ type Server struct {
 	cfg Config
 	log *slog.Logger
 	now func() time.Time
+	// snapshotMu 在线快照防重入(POST /admin/snapshot):bbolt 读事务
+	// 本身不挡写路径,但重复快照纯属浪费磁盘 IO,并发触发直接 409。
+	snapshotMu sync.Mutex
 }
 
 // New 构造 server。
@@ -110,6 +117,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /healthz", s.handleHealthz)
 	mux.HandleFunc("GET /readyz", s.handleReadyz)
 	mux.HandleFunc("GET /metrics", s.handleMetrics)
+	mux.HandleFunc("POST /admin/snapshot", s.handleAdminSnapshot)
 	return s.logging(s.recoverPanics(s.banGuard(mux)))
 }
 
@@ -579,6 +587,52 @@ func (s *Server) handleMetrics(w http.ResponseWriter, r *http.Request) {
 	_, _ = io.WriteString(w, s.cfg.Metrics.Render())
 }
 
+// handleAdminSnapshot 进程内 bbolt 一致性快照(在线备份通道)。
+//
+// 旧 `relay snapshot` 子命令是第二进程 bolt.Open 同一个数据库——常驻 relay
+// 持 flock 独占,必然超时(bbolt 无 WAL,运行中直接 cp 文件是撕裂副本,官方
+// 唯一认可的在线备份就是本进程读事务里 WriteTo)。CLI 子命令保留给停机
+// 恢复场景,在线备份一律走这里。
+//
+// 鉴权复用 METRICS_TOKEN(同 ops 信任面,零新配置);token 未设时整个端点
+// 禁用——快照触发磁盘写,不允许匿名触达。路由挂 /admin 不进 /v1(客户端面)。
+// 输出落在数据库同级的 snapshots/ 目录:relay-<UTC 时间戳>.db。
+func (s *Server) handleAdminSnapshot(w http.ResponseWriter, r *http.Request) {
+	if s.cfg.MetricsToken == "" {
+		writeError(w, http.StatusServiceUnavailable, "snapshot disabled: no admin token configured")
+		return
+	}
+	// 常量时间比较,与 /metrics 同一 pattern,防时序侧信道猜 token。
+	if subtle.ConstantTimeCompare([]byte(bearerToken(r)), []byte(s.cfg.MetricsToken)) != 1 {
+		writeError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+	if !s.snapshotMu.TryLock() {
+		writeError(w, http.StatusConflict, "snapshot already in progress")
+		return
+	}
+	defer s.snapshotMu.Unlock()
+	start := s.now()
+	out := filepath.Join(
+		filepath.Dir(s.cfg.Store.Path()), "snapshots",
+		fmt.Sprintf("relay-%s.db", start.UTC().Format("20060102T150405Z")))
+	if err := s.cfg.Store.Snapshot(out); err != nil {
+		s.internal(w, "snapshot failed", err)
+		return
+	}
+	info, err := os.Stat(out)
+	if err != nil {
+		s.internal(w, "snapshot stat failed", err)
+		return
+	}
+	s.log.Info("snapshot written", "path", out, "bytes", info.Size())
+	writeJSON(w, http.StatusCreated, map[string]any{
+		"path":        out,
+		"bytes":       info.Size(),
+		"duration_ms": s.now().Sub(start).Milliseconds(),
+	})
+}
+
 // ---------- 鉴权 ----------
 
 func (s *Server) authDaemon(r *http.Request) (store.Daemon, bool) {
@@ -662,7 +716,9 @@ func (s *Server) banGuard(next http.Handler) http.Handler {
 		sw := &statusWriter{ResponseWriter: w, status: http.StatusOK}
 		next.ServeHTTP(sw, r)
 		switch r.URL.Path {
-		case "/healthz", "/readyz", "/metrics":
+		case "/healthz", "/readyz", "/metrics", "/admin/snapshot":
+			// ops 面(健康/指标/快照)不计失败:监控与备份 cron 的过期
+			// token 不得把部署机自己 IP 灌进封禁表(自打 DEAD)。
 			return
 		}
 		if sw.status >= 400 {

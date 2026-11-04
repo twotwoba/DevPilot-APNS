@@ -77,6 +77,8 @@ Usage:
   devpilot-relay serve       start the relay (configured via environment variables)
   devpilot-relay healthcheck check /healthz (for container HEALTHCHECK)
   devpilot-relay snapshot    export a bbolt snapshot [--out PATH]
+                             (offline use only: while the relay is running,
+                              POST /admin/snapshot instead — bbolt flock)
   devpilot-relay test-push   send a test push to a real device
                              [--relay URL] [--credential dpd_...] [--kind approval|task]
   devpilot-relay version
@@ -340,6 +342,11 @@ func runSnapshot(args []string) int {
 	st, err := store.Open(filepath.Join(cfg.DataDir, "relay.db"))
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		// 常见误用:relay 正在跑,bbolt flock 独占导致这里 open 超时。
+		// 指到在线快照端点,别让操作者在旧路上继续撞墙。
+		if strings.Contains(err.Error(), "timeout") {
+			fmt.Fprintln(os.Stderr, "hint: the running relay holds the database lock; use POST /admin/snapshot for online backups")
+		}
 		return 1
 	}
 	defer st.Close()

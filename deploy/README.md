@@ -146,15 +146,31 @@ magnitude smaller than the hole this closes.
 
 ## 6. Backups
 
-The relay ships a consistent snapshot subcommand (bbolt `View → tx.WriteTo`):
+Online backups go through the in-process snapshot endpoint (bbolt `View →
+WriteTo` inside the running relay — consistent, no lock conflicts, writes
+via tmp-file + atomic rename). It reuses `METRICS_TOKEN` and is disabled
+unless that token is set:
 
 ```bash
-docker compose exec relay /usr/local/bin/devpilot-relay snapshot --out /data/snapshots/relay-$(date +%F).db
+curl -fsS -X POST \
+  -H "Authorization: Bearer $METRICS_TOKEN" \
+  https://relay.example.com/admin/snapshot
+# {"path":"/data/snapshots/relay-20261104T030000Z.db","bytes":98304,"duration_ms":4}
 ```
 
-Run it daily from a host cron job and sync `/data/snapshots` to offsite
-storage. A snapshot can restore by replacing `/data/relay.db` while the relay
-is stopped.
+Daily cron on the host (keeps the last 7 days; the snapshot lands in the
+named volume `relay-data`, so also sync it offsite):
+
+```cron
+0 3 * * * cd /home/ec2-user/DevPilot-APNS/deploy && . ./.env && curl -fsS -m 60 -X POST -H "Authorization: Bearer $METRICS_TOKEN" https://YOUR_DOMAIN/admin/snapshot >> snapshots-cron.log 2>&1
+30 3 * * * docker run --rm -v relay-data:/data alpine:3.20 sh -c 'cd /data/snapshots && ls -1t | tail -n +8 | xargs -r rm --'
+```
+
+The `devpilot-relay snapshot` subcommand still exists but only works while
+the relay is **stopped** (bbolt takes an exclusive flock; a second process
+open against a running relay times out — it prints a hint pointing here).
+Use it for restore-path drills: stop the relay, snapshot/verify/replace
+`/data/relay.db`, start it again.
 
 ## 7. Monitoring & alerting
 
