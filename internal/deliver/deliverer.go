@@ -355,6 +355,11 @@ func (d *Deliverer) push(tier store.Tier, kind, deviceID string, env wire.Envelo
 		}
 		d.log.Log(context.Background(), level, "APNs rejected push", "kind", kind, "device_id", deviceID,
 			"event_id", env.EventID, "status", res.Status, "reason", res.Reason, "prune", res.Prune)
+	case res.EnvFallback:
+		// 主端点环境不符、对端受理：TestFlight development 包与 App Store 包
+		// 共存期的常态路径，受理即成功，但留痕供环境比例观测。
+		d.log.Info("APNs push accepted via alternate environment", "kind", kind,
+			"device_id", deviceID, "event_id", env.EventID)
 	}
 	d.cfg.Metrics.IncPush(kind, status)
 	return res
