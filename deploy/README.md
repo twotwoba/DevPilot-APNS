@@ -158,12 +158,23 @@ curl -fsS -X POST \
 # {"path":"/data/snapshots/relay-20261104T030000Z.db","bytes":98304,"duration_ms":4}
 ```
 
-Daily cron on the host (keeps the last 7 days; the snapshot lands in the
-named volume `relay-data`, so also sync it offsite):
+Daily schedule on the host (keeps the last 7 days; the snapshot lands in the
+named volume `deploy_relay-data` — volume names carry the compose project
+prefix, confirm with `docker volume ls` — so also sync it offsite). The
+official deployment uses the systemd timer in `deploy/systemd/` (Ubuntu
+24.04 has no crontab; `Persistent=true` catches missed runs). Install:
+
+```bash
+sudo install -D -m 755 deploy/systemd/relay-snapshot.sh /home/ec2-user/bin/relay-snapshot.sh
+sudo install -m 644 deploy/systemd/relay-snapshot.{service,timer} /etc/systemd/system/
+sudo systemctl daemon-reload && sudo systemctl enable --now relay-snapshot.timer
+```
+
+Equivalent cron template:
 
 ```cron
-0 3 * * * cd /home/ec2-user/DevPilot-APNS/deploy && . ./.env && curl -fsS -m 60 -X POST -H "Authorization: Bearer $METRICS_TOKEN" https://YOUR_DOMAIN/admin/snapshot >> snapshots-cron.log 2>&1
-30 3 * * * docker run --rm -v relay-data:/data alpine:3.20 sh -c 'cd /data/snapshots && ls -1t | tail -n +8 | xargs -r rm --'
+0 3 * * * cd /home/ec2-user/DevPilot-APNS/deploy && set -a && . ./.env && set +a && curl -fsS -m 60 -X POST -H "Authorization: Bearer $METRICS_TOKEN" https://YOUR_DOMAIN/admin/snapshot >> snapshot-cron.log 2>&1
+30 3 * * * docker run --rm -v deploy_relay-data:/data alpine:3.20 sh -c 'cd /data/snapshots && ls -1t | tail -n +8 | xargs -r rm --' >> snapshot-cron.log 2>&1
 ```
 
 The `devpilot-relay snapshot` subcommand still exists but only works while
