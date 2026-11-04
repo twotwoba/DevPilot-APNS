@@ -130,6 +130,9 @@ type Pending struct {
 	Event        wire.Envelope `json:"event"`
 	Status       string        `json:"status"` // pending / approved / denied / expired / cancelled
 	Decision     string        `json:"decision,omitempty"`
+	// Choice 是选项型审批所选的候选标签（wire.Decision.Choice 透传落库），
+	// 重连补发时随 Decision 一并回放。v0.4.3 增量字段；旧档缺键回落空串。
+	Choice       string        `json:"choice,omitempty"`
 	CreatedAt    int64         `json:"created_at"`
 	ExpiresAt    int64         `json:"expires_at"`
 	DecidedAt    int64         `json:"decided_at,omitempty"`
@@ -758,7 +761,8 @@ func (s *Store) PendingForDaemon(daemonID string, now int64) ([]Pending, error) 
 }
 
 // ApplyDecision 以 first-wins 语义写入决策，并返回 ack 状态。
-func (s *Store) ApplyDecision(approvalID, daemonID, decision string, now int64) (wire.AckStatus, Pending, error) {
+// choice 是选项型审批的所选标签（可空），随决策同事务落库、补发时回放。
+func (s *Store) ApplyDecision(approvalID, daemonID, decision, choice string, now int64) (wire.AckStatus, Pending, error) {
 	var (
 		status wire.AckStatus
 		out    Pending
@@ -788,6 +792,7 @@ func (s *Store) ApplyDecision(approvalID, daemonID, decision string, now int64) 
 			}
 			out.Status = statusForDecision(decision)
 			out.Decision = decision
+			out.Choice = choice
 			out.DecidedAt = now
 			out.DeliverUntil = now + int64(PendingGrace.Seconds())
 			status = wire.AckAccepted

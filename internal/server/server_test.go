@@ -395,7 +395,7 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 	})
 	send(t, app, wire.Decision{
 		V: wire.Version, Kind: wire.KindDecision, MsgID: "m_offline_d",
-		ApprovalID: approvalID, Decision: wire.DecisionDeny, TS: now,
+		ApprovalID: approvalID, Decision: wire.DecisionDeny, Choice: "Session cookie", TS: now,
 	})
 	closed, ok := recv(t, app).(*wire.Envelope)
 	if !ok || closed.Type != wire.EventApprovalClosed || closed.Payload.StatusText != wire.CloseReasonDenied {
@@ -415,6 +415,10 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 	d, ok := recv(t, daemon).(*wire.Decision)
 	if !ok || d.ApprovalID != approvalID || d.Decision != wire.DecisionDeny {
 		t.Fatalf("replayed decision = %+v", d)
+	}
+	// 选项作答的标签随补发回放（hook 侧据此喂回 agent）。
+	if d.Choice != "Session cookie" {
+		t.Fatalf("replayed choice = %q", d.Choice)
 	}
 
 	// daemon ack 之后不再重放。

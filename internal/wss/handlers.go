@@ -66,7 +66,7 @@ func (h *Hub) onDecision(c *Conn, d *wire.Decision) {
 		h.ack(c, d.MsgID, "", d.ApprovalID, wire.AckRejected)
 		return
 	}
-	status, err := h.ApplyDeviceDecision(c.DaemonID, d.ApprovalID, d.Decision, h.now().Unix())
+	status, err := h.ApplyDeviceDecision(c.DaemonID, d.ApprovalID, d.Decision, d.Choice, h.now().Unix())
 	if err != nil {
 		h.log.Error("failed to apply decision", "approval_id", d.ApprovalID, "err", err)
 		h.ack(c, d.MsgID, "", d.ApprovalID, wire.AckRejected)
@@ -78,8 +78,9 @@ func (h *Hub) onDecision(c *Conn, d *wire.Decision) {
 
 // ApplyDeviceDecision 是设备决策的唯一入口(WSS onDecision 与 REST /v1/decisions 共用):
 // first-wins 落库 → 转发 daemon(离线则待重连补发) → 合成 approval_closed 广播手机。
-func (h *Hub) ApplyDeviceDecision(daemonID, approvalID string, decision wire.DecisionKind, now int64) (wire.AckStatus, error) {
-	status, p, err := h.cfg.Store.ApplyDecision(approvalID, daemonID, string(decision), now)
+// choice 是选项型审批的所选标签(可空),透传落库并随转发/补发回放,本层不解释语义。
+func (h *Hub) ApplyDeviceDecision(daemonID, approvalID string, decision wire.DecisionKind, choice string, now int64) (wire.AckStatus, error) {
+	status, p, err := h.cfg.Store.ApplyDecision(approvalID, daemonID, string(decision), choice, now)
 	if err != nil {
 		return status, err
 	}
@@ -88,7 +89,7 @@ func (h *Hub) ApplyDeviceDecision(daemonID, approvalID string, decision wire.Dec
 	}
 	h.forwardDecision(p.DaemonID, wire.Decision{
 		V: wire.Version, Kind: wire.KindDecision, MsgID: id.New(),
-		ApprovalID: approvalID, Decision: decision, TS: now,
+		ApprovalID: approvalID, Decision: decision, Choice: choice, TS: now,
 	})
 	reason := wire.CloseReasonApproved
 	if decision == wire.DecisionDeny {
@@ -217,7 +218,8 @@ func (h *Hub) replayDecisions(c *Conn) {
 	for _, p := range items {
 		if err := c.Send(wire.Decision{
 			V: wire.Version, Kind: wire.KindDecision, MsgID: id.New(),
-			ApprovalID: p.ApprovalID, Decision: wire.DecisionKind(p.Decision), TS: h.now().Unix(),
+			ApprovalID: p.ApprovalID, Decision: wire.DecisionKind(p.Decision),
+			Choice: p.Choice, TS: h.now().Unix(),
 		}); err != nil {
 			h.log.Warn("failed to replay decision", "approval_id", p.ApprovalID, "err", err)
 			return

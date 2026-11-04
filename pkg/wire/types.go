@@ -146,6 +146,12 @@ type Payload struct {
 	PromptSummary string `json:"prompt_summary,omitempty"`
 	// InputDigest 是 tool_input 规范化后的短哈希，用于展示与防篡改。
 	InputDigest string `json:"input_digest,omitempty"`
+	// Options 是选项型审批（AskUserQuestion）的候选标签，顺序保留；
+	// App 审批卡渲染成选项钮，点选后经 Decision.Choice 回传。仅当
+	// tool_input 能解析出唯一一问的选项时才携带（多问/解析失败不设键，
+	// App 回落二值 Approve/Deny）。属摘要白名单：只有选项 label 这种
+	// 「通知里用户看得到的内容」允许进入。v0.4.3 增量字段。
+	Options []string `json:"options,omitempty"`
 	// StatusText / StatusIcon 供 Live Activity 直接使用。
 	StatusText string `json:"status_text,omitempty"`
 	StatusIcon string `json:"status_icon,omitempty"`
@@ -197,7 +203,13 @@ type Decision struct {
 	MsgID      string       `json:"msg_id"`
 	ApprovalID string       `json:"approval_id"`
 	Decision   DecisionKind `json:"decision"`
-	TS         int64        `json:"ts"`
+	// Choice 是选项型审批所选的候选标签（对应 Payload.Options 中的项）。
+	// 语义上总是伴随 deny：daemon 侧以「deny + 理由携带答案」喂回 agent
+	// （Claude Code 的 deny 理由就是模型的输入）。relay 只透传/落库补发，
+	// 不解释语义；旧 relay 不认识该键（json 忽略未知键）会静默丢弃——
+	// 三端必须同步升级后选项钮才有端到端效果。v0.4.3 增量字段。
+	Choice string `json:"choice,omitempty"`
+	TS     int64  `json:"ts"`
 }
 
 // Ack 是对事件或决策的确认。
@@ -344,6 +356,11 @@ func (d *Decision) Validate() error {
 	}
 	if !d.Decision.Valid() {
 		return fmt.Errorf("wire: unknown decision %q", d.Decision)
+	}
+	// Choice 是选项标签回传：超帽即畸形（App 侧已按 MaxOptionRunes 截断），
+	// 拒绝而非截断——不认识的形状必须拒绝，这是本包的纪律。
+	if len([]rune(d.Choice)) > MaxOptionRunes {
+		return fmt.Errorf("wire: choice exceeds %d runes", MaxOptionRunes)
 	}
 	if d.TS <= 0 {
 		return fmt.Errorf("wire: ts must be a positive unix timestamp")

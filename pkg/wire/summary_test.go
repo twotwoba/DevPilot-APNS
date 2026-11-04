@@ -2,6 +2,7 @@ package wire
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -60,5 +61,63 @@ func TestSummarizeToolInputAskUserTruncation(t *testing.T) {
 	}
 	if !strings.HasSuffix(got, "…") {
 		t.Fatalf("truncated summary should end with ellipsis, got %q", got)
+	}
+}
+
+// TestSummarizeToolInputPlan ExitPlanMode 的 plan 提取（2026-11-04 真机截图
+// 事故第二根因：整串 JSON 落卡）。plan 分支优先级最高；换行即结构（markdown
+// 标题/列表），压单行等于报废；JSON 的 \n 转义经解码已是真实换行。
+func TestSummarizeToolInputPlan(t *testing.T) {
+	in := `{"plan":"## Goal\n\n- ship it\n- no regressions"}`
+	got := SummarizeToolInput(json.RawMessage(in))
+	want := "## Goal\n\n- ship it\n- no regressions"
+	if got != want {
+		t.Fatalf("plan:\n got  %q\n want %q", got, want)
+	}
+
+	// 超帽截断带省略号;尾部空白先修剪不占帽
+	long := strings.Repeat("x", MaxPlanRunes+50)
+	got = SummarizeToolInput(json.RawMessage(`{"plan":"` + long + "\n\n" + `"}`))
+	if len([]rune(got)) > MaxPlanRunes {
+		t.Fatalf("plan must be truncated to %d runes, got %d", MaxPlanRunes, len([]rune(got)))
+	}
+	if !strings.HasSuffix(got, "…") {
+		t.Fatalf("truncated plan should end with ellipsis, got %q", got)
+	}
+
+	// plan 空串不吃摘要:回落原文兜底路径
+	if got := SummarizeToolInput(json.RawMessage(`{"plan":"   "}`)); !strings.Contains(got, "plan") {
+		t.Fatalf("blank plan should fall back to raw JSON text, got %q", got)
+	}
+}
+
+// TestExtractOptions 选项提取:恰好一问且选项齐整才出;多问/缺 label/超量
+// 一律 nil——App 回落 Approve/Deny 二值,不出半残的选项钮。
+func TestExtractOptions(t *testing.T) {
+	single := `{"questions":[{"question":"Q","header":"H","options":[{"label":"JWT"},{"label":"Session cookie"}]}]}`
+	if got := ExtractOptions(json.RawMessage(single)); !reflect.DeepEqual(got, []string{"JWT", "Session cookie"}) {
+		t.Fatalf("single question:\n got  %#v\n want [JWT Session cookie]", got)
+	}
+
+	cases := []string{
+		`{bad`,                                                              // 非法 JSON
+		`{"command":"git status"}`,                                          // 非 questions 形态
+		`{"questions":[]}`,                                                  // 空问
+		`{"questions":[{"question":"Q1"},{"question":"Q2"}]}`,               // 多问
+		`{"questions":[{"options":[{"label":"a"},{"label":""}]}]}`,          // 空 label
+		`{"questions":[{"options":[]}]}`,                                    // 零选项
+		`{"questions":[{"options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"},{"label":"e"},{"label":"f"},{"label":"g"}]}]}`, // 超 6 项
+	}
+	for _, in := range cases {
+		if got := ExtractOptions(json.RawMessage(in)); got != nil {
+			t.Fatalf("ExtractOptions(%q) = %#v, want nil", in, got)
+		}
+	}
+
+	// 长 label 截到 MaxOptionRunes 且带省略号
+	long := strings.Repeat("选", MaxOptionRunes+10)
+	got := ExtractOptions(json.RawMessage(`{"questions":[{"options":[{"label":"` + long + `"}]}]}`))
+	if len(got) != 1 || len([]rune(got[0])) > MaxOptionRunes || !strings.HasSuffix(got[0], "…") {
+		t.Fatalf("long label should be truncated: %#v", got)
 	}
 }

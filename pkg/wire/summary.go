@@ -11,6 +11,13 @@ const (
 	MaxCommandRunes = 256
 	MaxReplyRunes   = 80
 	MaxPromptRunes  = 200
+	// MaxPlanRunes 是 ExitPlanMode plan 详情帽。方案是用户要在手机上读后
+	// 拍板的正文，256 的横幅帽必出残篇；对齐 ReplySummaryRunes 的详情口径
+	// （保换行保结构，App 端 markdown 渲染），列表预览由 App 侧自行截断。
+	MaxPlanRunes = 2000
+	// MaxOptionRunes 是单个选项标签的帽。AskUserQuestion 的 label 设计上
+	// 就是短词（5-8 词），80 runes 是防御位不是常态。
+	MaxOptionRunes = 80
 )
 
 // 超时分层常量。两端共享，避免各写一套。
@@ -60,24 +67,69 @@ func Summarize(s string, max int) string {
 	return Truncate(strings.Join(strings.Fields(s), " "), max)
 }
 
-// SummarizeToolInput 从 tool_input 中提取用户可读的一行摘要。
+// SummarizeToolInput 从 tool_input 中提取用户可读的摘要。
 //
-// 优先取 command / file_path / path / pattern，其次 AskUserQuestion 的
-// questions 数组（渲染成人话，见 summarizeAskUser），最后退化到 JSON 文本。
-// 绝不返回完整文件内容或工具输出。
+// 优先级：ExitPlanMode 的 plan（保换行的 markdown 正文，详情帽）→
+// AskUserQuestion 的 questions 数组（渲染成人话，见 summarizeAskUser）→
+// command / file_path / notebook_path / path / pattern / query / url 等键位
+// 单行提取，最后退化到 JSON 文本单行。绝不返回完整文件内容或工具输出。
 func SummarizeToolInput(raw json.RawMessage) string {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err == nil {
+		// plan 是要拍板的方案正文：换行即结构（标题/列表/栅栏），压成单行
+		// 等于报废。直取字符串值——JSON 里的 \n 转义经解码已是真实换行，
+		// 「卡片上一坨转义符」的观感随整串 JSON 落卡一起消失。
+		if plan, ok := m["plan"].(string); ok && strings.TrimSpace(plan) != "" {
+			return Truncate(strings.TrimRight(plan, " \t\n"), MaxPlanRunes)
+		}
 		if s := summarizeAskUser(m); s != "" {
 			return Summarize(s, MaxCommandRunes)
 		}
-		for _, key := range []string{"command", "file_path", "path", "pattern", "query", "url"} {
+		for _, key := range []string{"command", "file_path", "notebook_path", "path", "pattern", "query", "url"} {
 			if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
 				return Summarize(v, MaxCommandRunes)
 			}
 		}
 	}
 	return Summarize(string(raw), MaxCommandRunes)
+}
+
+// ExtractOptions 提取 AskUserQuestion 的候选标签，供审批卡渲染选项钮。
+//
+// 只在「恰好一问、每问选项齐整」时返回非 nil：多问时手机一次只能替用户
+// 答一问，回退 Approve/Deny 二值更诚实。标签顺序即 JSON 顺序（App 渲染
+// 与回传选择都按此序）；单个标签截到 MaxOptionRunes。
+func ExtractOptions(raw json.RawMessage) []string {
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err != nil {
+		return nil
+	}
+	qs, ok := m["questions"].([]any)
+	if !ok || len(qs) != 1 {
+		return nil
+	}
+	q, ok := qs[0].(map[string]any)
+	if !ok {
+		return nil
+	}
+	os, ok := q["options"].([]any)
+	if !ok || len(os) == 0 || len(os) > 6 {
+		return nil
+	}
+	out := make([]string, 0, len(os))
+	for _, ov := range os {
+		om, ok := ov.(map[string]any)
+		if !ok {
+			return nil
+		}
+		l, _ := om["label"].(string)
+		l = strings.TrimSpace(l)
+		if l == "" {
+			return nil
+		}
+		out = append(out, Truncate(l, MaxOptionRunes))
+	}
+	return out
 }
 
 // summarizeAskUser 把 AskUserQuestion 的 tool_input 渲染成可读摘要。

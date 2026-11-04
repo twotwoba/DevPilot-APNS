@@ -429,6 +429,8 @@ func (s *Server) handlePending(w http.ResponseWriter, r *http.Request) {
 type decisionRequest struct {
 	ApprovalID string `json:"approval_id"`
 	Decision   string `json:"decision"`
+	// Choice 选项型审批所选标签（可空）；长度校验在 wire.Decision.Validate。
+	Choice string `json:"choice,omitempty"`
 }
 
 // handleDecisionREST 是 App 侧无需 WSS 的决策入口:LA 按钮(App Intent 进程)与
@@ -449,7 +451,13 @@ func (s *Server) handleDecisionREST(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "approval_id and decision (allow|deny) are required")
 		return
 	}
-	status, err := s.cfg.Hub.ApplyDeviceDecision(device.DaemonID, strings.TrimSpace(req.ApprovalID), decision, s.now().Unix())
+	choice := strings.TrimSpace(req.Choice)
+	// choice 超帽 = 畸形请求：与 wire.Decision.Validate 同一钳制口径。
+	if len([]rune(choice)) > wire.MaxOptionRunes {
+		writeError(w, http.StatusBadRequest, "choice too long")
+		return
+	}
+	status, err := s.cfg.Hub.ApplyDeviceDecision(device.DaemonID, strings.TrimSpace(req.ApprovalID), decision, choice, s.now().Unix())
 	if err != nil {
 		s.internal(w, "failed to apply decision", err)
 		return

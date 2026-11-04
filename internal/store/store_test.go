@@ -229,18 +229,18 @@ func TestDecisionFirstWinsAndExpiry(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	status, p, err := s.ApplyDecision(approvalID, daemonID, "approved", testNow+1)
+	status, p, err := s.ApplyDecision(approvalID, daemonID, "approved", "", testNow+1)
 	if err != nil || status != wire.AckAccepted || p.Decision != "approved" {
 		t.Fatalf("status=%v p=%+v err=%v", status, p, err)
 	}
-	status, _, err = s.ApplyDecision(approvalID, daemonID, "denied", testNow+2)
+	status, _, err = s.ApplyDecision(approvalID, daemonID, "denied", "", testNow+2)
 	if err != nil || status != wire.AckAlreadyDecided {
 		t.Fatalf("duplicate decision status=%v err=%v", status, err)
 	}
-	if status, _, _ := s.ApplyDecision(approvalID, "dd_other", "deny", testNow); status != wire.AckUnknown {
+	if status, _, _ := s.ApplyDecision(approvalID, "dd_other", "deny", "", testNow); status != wire.AckUnknown {
 		t.Fatalf("cross-daemon decision status=%v", status)
 	}
-	if status, _, _ := s.ApplyDecision("apv_missing", daemonID, "deny", testNow); status != wire.AckUnknown {
+	if status, _, _ := s.ApplyDecision("apv_missing", daemonID, "deny", "", testNow); status != wire.AckUnknown {
 		t.Fatalf("unknown approval status=%v", status)
 	}
 
@@ -251,7 +251,7 @@ func TestDecisionFirstWinsAndExpiry(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	status, _, err = s.ApplyDecision("apv_old", daemonID, "approved", testNow+11)
+	status, _, err = s.ApplyDecision("apv_old", daemonID, "approved", "", testNow+11)
 	if err != nil || status != wire.AckExpired {
 		t.Fatalf("expired status=%v err=%v", status, err)
 	}
@@ -266,7 +266,7 @@ func TestUndeliveredDecisions(t *testing.T) {
 		ApprovalID: "apv_1", DaemonID: daemonID, Event: event, Status: "pending",
 		CreatedAt: testNow, ExpiresAt: testNow + 300,
 	})
-	if _, _, err := s.ApplyDecision("apv_1", daemonID, "approved", testNow+1); err != nil {
+	if _, _, err := s.ApplyDecision("apv_1", daemonID, "approved", "", testNow+1); err != nil {
 		t.Fatal(err)
 	}
 	items, err := s.UndeliveredDecisions(daemonID, testNow+2)
@@ -276,6 +276,37 @@ func TestUndeliveredDecisions(t *testing.T) {
 	if err := s.MarkDecisionDelivered("apv_1"); err != nil {
 		t.Fatal(err)
 	}
+	items, _ = s.UndeliveredDecisions(daemonID, testNow+3)
+	if len(items) != 0 {
+		t.Fatalf("delivered still returned: %+v", items)
+	}
+}
+
+// TestApplyDecisionChoiceRoundTrip 选项型审批:choice 随决策同事务落库,
+// UndeliveredDecisions 补发窗口原样带回(重连回放的取数路径即此)。
+func TestApplyDecisionChoiceRoundTrip(t *testing.T) {
+	s := newStore(t)
+	daemonID := "dd_0123456789abcdef0123456789abcdef"
+	event := approvalEvent("ev_1", "apv_1")
+	event.DaemonID = daemonID
+	_ = s.PutPending(Pending{
+		ApprovalID: "apv_1", DaemonID: daemonID, Event: event, Status: "pending",
+		CreatedAt: testNow, ExpiresAt: testNow + 300,
+	})
+	status, p, err := s.ApplyDecision("apv_1", daemonID, "deny", "Session cookie", testNow+1)
+	if err != nil || status != wire.AckAccepted {
+		t.Fatalf("status=%v err=%v", status, err)
+	}
+	if p.Choice != "Session cookie" {
+		t.Fatalf("choice not persisted: %+v", p)
+	}
+
+	// 补发窗口带回 choice;标记送达后消失
+	items, err := s.UndeliveredDecisions(daemonID, testNow+2)
+	if err != nil || len(items) != 1 || items[0].Choice != "Session cookie" {
+		t.Fatalf("replay items=%+v err=%v", items, err)
+	}
+	_ = s.MarkDecisionDelivered("apv_1")
 	items, _ = s.UndeliveredDecisions(daemonID, testNow+3)
 	if len(items) != 0 {
 		t.Fatalf("delivered still returned: %+v", items)
@@ -597,7 +628,7 @@ func TestCleanupReturnsExpiredPendings(t *testing.T) {
 			t.Fatal(err)
 		}
 		if decide {
-			if _, _, err := s.ApplyDecision(approvalID, daemonID, "approved", testNow+1); err != nil {
+			if _, _, err := s.ApplyDecision(approvalID, daemonID, "approved", "", testNow+1); err != nil {
 				t.Fatal(err)
 			}
 		}
