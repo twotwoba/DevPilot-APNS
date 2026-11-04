@@ -358,6 +358,15 @@ func (s *Store) Pair(codeHash string, device Device, tier Tier, now int64) (Daem
 			}
 			if d.DaemonID == ps.DaemonID {
 				stale = append(stale, bytes.Clone(k))
+				return nil
+			}
+			// 换绑机场景:同一台手机重新配到另一台 daemon 时,旧 daemon 名下
+			// 那个还揣着同款 APNs token 的设备行必须一并清掉——否则旧机器的
+			// 审批照发横幅,而 App 凭据已被新配对覆盖,永远点不进也回放不到
+			// (幽灵横幅)。空 token 不扫(pair 请求没带 token 时无从比对)。
+			if device.APNSToken != "" && d.APNSToken == device.APNSToken &&
+				string(k) != device.ID {
+				stale = append(stale, bytes.Clone(k))
 			}
 			return nil
 		}); err != nil {

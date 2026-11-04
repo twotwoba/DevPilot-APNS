@@ -663,3 +663,72 @@ func TestSchemaV3AdditiveFields(t *testing.T) {
 		t.Fatalf("push-to-start token not cleared: %+v err=%v", got, err)
 	}
 }
+
+// TestPairSupersedesForeignDeviceSameToken 换绑机:同一台手机(APNs token 相同)
+// 从 daemon A 改配 daemon B 时,A 名下旧设备行必须级联清除——否则旧机器审批
+// 照发横幅,而 App 凭据已随新配对覆盖,永远无法决策也回放不到(幽灵横幅,
+// 2026-11-04 真机「前台有横幅、收件箱永远没有」的确定性根因)。
+func TestPairSupersedesForeignDeviceSameToken(t *testing.T) {
+	s := newStore(t)
+	daemonA := "dd_0123456789abcdef0123456789abcdef"
+	daemonB := "dd_ffffffffffffffffffffffffffffffff"
+
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonA)
+	secretA, err := pairing.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := Device{ID: pairing.NewDeviceID(), CredHash: pairing.SecretHash(secretA),
+		Name: "iPhone", APNSToken: "tok-iphone"}
+	if _, _, err := s.Pair(pairing.CodeHash("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), old, TierFree, testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	// 同一部手机(同 token)改配 daemon B
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUV", daemonB)
+	secretB, err := pairing.NewSecret()
+	if err != nil {
+		t.Fatal(err)
+	}
+	fresh := Device{ID: pairing.NewDeviceID(), CredHash: pairing.SecretHash(secretB),
+		Name: "iPhone", APNSToken: "tok-iphone"}
+	if _, _, err := s.Pair(pairing.CodeHash("ABCDEFGHIJKLMNOPQRSTUV"), fresh, TierFree, testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	// 旧 daemon 名下的孤儿设备行已被清除
+	if _, err := s.Device(old.ID); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("stale cross-daemon device row should be deleted, err = %v", err)
+	}
+	// 新设备行在
+	if _, err := s.Device(fresh.ID); err != nil {
+		t.Fatalf("fresh device row missing: %v", err)
+	}
+}
+
+// 对照:换绑清扫只按 token 匹配——另一台真手机(不同 token)配到另一台
+// daemon 时,任何已有设备行都不受波及(多台手机各配各的互不误伤)。
+func TestPairKeepsOtherTokens(t *testing.T) {
+	s := newStore(t)
+	daemonA := "dd_0123456789abcdef0123456789abcdef"
+	daemonB := "dd_ffffffffffffffffffffffffffffffff"
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", daemonA)
+	secretA, _ := pairing.NewSecret()
+	other := Device{ID: pairing.NewDeviceID(), CredHash: pairing.SecretHash(secretA),
+		Name: "iPad", APNSToken: "tok-ipad"}
+	if _, _, err := s.Pair(pairing.CodeHash("ABCDEFGHIJKLMNOPQRSTUVWXYZ"), other, TierFree, testNow); err != nil {
+		t.Fatal(err)
+	}
+
+	// 另一台手机(token 不同)配到另一台 daemon
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUV", daemonB)
+	secretB, _ := pairing.NewSecret()
+	fresh := Device{ID: pairing.NewDeviceID(), CredHash: pairing.SecretHash(secretB),
+		Name: "iPhone", APNSToken: "tok-iphone"}
+	if _, _, err := s.Pair(pairing.CodeHash("ABCDEFGHIJKLMNOPQRSTUV"), fresh, TierFree, testNow); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := s.VerifyDevice(other.ID, secretA); !ok {
+		t.Fatal("device with different token must survive pairing of another phone")
+	}
+}

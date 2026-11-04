@@ -62,11 +62,15 @@ func Summarize(s string, max int) string {
 
 // SummarizeToolInput 从 tool_input 中提取用户可读的一行摘要。
 //
-// 优先取 command / file_path / path / pattern，其次退化到 JSON 文本。
+// 优先取 command / file_path / path / pattern，其次 AskUserQuestion 的
+// questions 数组（渲染成人话，见 summarizeAskUser），最后退化到 JSON 文本。
 // 绝不返回完整文件内容或工具输出。
 func SummarizeToolInput(raw json.RawMessage) string {
 	var m map[string]any
 	if err := json.Unmarshal(raw, &m); err == nil {
+		if s := summarizeAskUser(m); s != "" {
+			return Summarize(s, MaxCommandRunes)
+		}
 		for _, key := range []string{"command", "file_path", "path", "pattern", "query", "url"} {
 			if v, ok := m[key].(string); ok && strings.TrimSpace(v) != "" {
 				return Summarize(v, MaxCommandRunes)
@@ -74,4 +78,53 @@ func SummarizeToolInput(raw json.RawMessage) string {
 		}
 	}
 	return Summarize(string(raw), MaxCommandRunes)
+}
+
+// summarizeAskUser 把 AskUserQuestion 的 tool_input 渲染成可读摘要。
+// 输入形态 {"questions":[{"question","header","options":[{"label"},…]},…]}：
+// 原样落 JSON 会在审批卡上整串代码。输出「问题 · 选项a / 选项b」，多问以
+// 「；」相连；header 与 question 前缀重复时省 header。非 questions 形态
+// 返回空串，走既有键位提取。
+func summarizeAskUser(m map[string]any) string {
+	qs, ok := m["questions"].([]any)
+	if !ok || len(qs) == 0 {
+		return ""
+	}
+	var out []string
+	for _, qv := range qs {
+		q, ok := qv.(map[string]any)
+		if !ok {
+			continue
+		}
+		question, _ := q["question"].(string)
+		question = strings.TrimSpace(question)
+		header, _ := q["header"].(string)
+		var opts []string
+		if os, ok := q["options"].([]any); ok {
+			for _, ov := range os {
+				om, ok := ov.(map[string]any)
+				if !ok {
+					continue
+				}
+				if l, ok := om["label"].(string); ok && strings.TrimSpace(l) != "" {
+					opts = append(opts, strings.TrimSpace(l))
+				}
+			}
+		}
+		if question == "" && len(opts) == 0 {
+			continue
+		}
+		var b strings.Builder
+		if header = strings.TrimSpace(header); header != "" && !strings.Contains(question, header) {
+			b.WriteString(header)
+			b.WriteString("：")
+		}
+		b.WriteString(question)
+		if len(opts) > 0 {
+			b.WriteString(" · ")
+			b.WriteString(strings.Join(opts, " / "))
+		}
+		out = append(out, b.String())
+	}
+	return strings.Join(out, "；")
 }
