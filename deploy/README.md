@@ -101,6 +101,49 @@ migrations at the moment. To roll back, point `image:` back at the previous tag.
   Live Activity buttons and as the notification-action fallback) and
   push-to-start reporting via `POST /v1/la-tokens {"event":"push_start"}`.
 
+### Pro tier receipt enforcement (official deployment only)
+
+The daemon tier used to be a client-side claim: any free user pointing the
+"self-hosted relay" field at the official domain (a trailing slash was enough
+to defeat the string compare) paired at pro quota. The server now verifies an
+Apple-signed StoreKit 2 transaction JWS (`pro_jws` field on `/v1/pair` and
+`/v1/devices/token`) before granting pro.
+
+- `ENFORCE_PRO_TIER=1` — turn on receipt verification. **Official deployment
+  only.** Self-hosted deployments must NOT set it: without it the server
+  behaves exactly like v1 (client claims pass through, app grants pro on
+  self-hosted by design).
+- `PRO_PRODUCT_IDS` — comma list, defaults to the monthly/annual/lifetime
+  product IDs. Leave the default unless products change.
+- `JWS_ALLOWED_ENVIRONMENTS` — defaults to `Production`. Staging may set
+  `Production,Sandbox` (TestFlight purchases live in the Sandbox environment).
+- `RESET_TIERS_ON_BOOT=1` — one-shot sweep: sets every daemon tier to free at
+  startup. Run it once on the day you enable enforcement, then REMOVE the env
+  and restart (otherwise every boot wipes tiers again).
+
+**Rollout order** (free users must not lose the pair, pro users must recover
+automatically):
+
+1. Ship the app update that sends `pro_jws` first. Old servers ignore the
+   unknown field; nothing changes.
+2. Deploy this relay version with `ENFORCE_PRO_TIER` unset and observe.
+3. Enable enforcement: set `ENFORCE_PRO_TIER=1` **and** `RESET_TIERS_ON_BOOT=1`,
+   restart once (this clears legacy self-claimed pro tiers, including
+   exploited ones).
+4. Remove `RESET_TIERS_ON_BOOT`, restart. Legit pro users recover pro
+   automatically on their next app cold start (24 h throttled tier re-sync)
+   or the next entitlement flip.
+
+Verification failure semantics: pairing never fails on tier — an unverifiable
+pro claim silently pairs as free (response echoes the applied `tier`);
+`/v1/devices/token` upgrading to pro without a valid receipt returns 422 and
+writes nothing (token included), so the client retries on its next sync.
+
+Not in scope (documented hardening backlog): OCSP revocation checks for the
+Apple signing chain, and a per-`transactionId` binding ledger (one receipt
+serving many daemons) — replay is family-sharing-scale abuse, orders of
+magnitude smaller than the hole this closes.
+
 ## 6. Backups
 
 The relay ships a consistent snapshot subcommand (bbolt `View → tx.WriteTo`):

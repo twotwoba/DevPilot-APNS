@@ -18,6 +18,7 @@ import (
 
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/pairing"
+	"github.com/twotwoba/DevPilot-APNS/internal/proentitlement"
 	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/ratelimit"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
@@ -60,6 +61,8 @@ type testEnvOpts struct {
 	Bans              *ratelimit.BanManager
 	TrustedProxyCount int
 	MetricsToken      string
+	// ProVerifier 非 nil 模拟官方部署的收据验签闸(见 pro_receipt_test.go)。
+	ProVerifier *proentitlement.Verifier
 }
 
 func newTestEnvOpts(t *testing.T, o testEnvOpts) *testEnv {
@@ -74,6 +77,7 @@ func newTestEnvOpts(t *testing.T, o testEnvOpts) *testEnv {
 	srv, err := New(Config{
 		Store: st, Hub: hub, Metrics: m,
 		Bans: o.Bans, TrustedProxyCount: o.TrustedProxyCount, MetricsToken: o.MetricsToken,
+		ProVerifier: o.ProVerifier,
 	})
 	if err != nil {
 		t.Fatal(err)

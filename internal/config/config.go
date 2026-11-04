@@ -41,6 +41,24 @@ type Config struct {
 	// 关闭则恢复全面计数(遥测 LA 始终计数)。
 	QuotaExemptApprovalPushes bool
 
+	// —— Pro 档位收据验签(官方部署专用)——
+	// EnforceProTier 开启后,客户端自报 tier=pro 必须附 Apple 签名的
+	// StoreKit 2 交易 JWS(/v1/pair 与 /v1/devices/token 均带 pro_jws),
+	// 验签通过才落 pro;缺失/失败配对静默降 free(配对不因此失败),
+	// token 改档返回 422。自建部署保持默认 false——行为与 v1 完全一致
+	// (客户端自报;自建恒 pro 由 App 侧 canonical 判定保证)。
+	EnforceProTier bool
+	// ProProductIDs 允许落 pro 的产品白名单(PRO_PRODUCT_IDS,逗号分隔)。
+	ProProductIDs []string
+	// JWSAllowedEnvironments 允许的交易环境(JWS_ALLOWED_ENVIRONMENTS,逗号
+	// 分隔;生产默认仅 Production。staging 联调可放 Sandbox——TestFlight
+	// 内购走 Sandbox 环境)。
+	JWSAllowedEnvironments []string
+	// ResetTiersOnBoot 一次性运维开关:启动时把所有 daemon 档位清回 free。
+	// 部署 enforcement 前清掉存量自报档位;正版用户 App 升级后经权益同步
+	// 自动回 pro。清完移除该 env 再重启。
+	ResetTiersOnBoot bool
+
 	// —— 生命周期 TTL(天;0=禁用,首发部署保持 0 观察)——
 	DaemonTTLDays int
 	DeviceTTLDays int
@@ -100,6 +118,18 @@ func FromEnv() (*Config, error) {
 	}
 	if c.QuotaExemptApprovalPushes, err = envBool("QUOTA_EXEMPT_APPROVAL_PUSHES", true); err != nil {
 		return nil, err
+	}
+	if c.EnforceProTier, err = envBool("ENFORCE_PRO_TIER", false); err != nil {
+		return nil, err
+	}
+	c.ProProductIDs = envCSV("PRO_PRODUCT_IDS",
+		"com.devpilot.pro.monthly,com.devpilot.pro.annual,com.devpilot.pro.lifetime")
+	c.JWSAllowedEnvironments = envCSV("JWS_ALLOWED_ENVIRONMENTS", "Production")
+	if c.ResetTiersOnBoot, err = envBool("RESET_TIERS_ON_BOOT", false); err != nil {
+		return nil, err
+	}
+	if c.EnforceProTier && len(c.ProProductIDs) == 0 {
+		return nil, fmt.Errorf("config: PRO_PRODUCT_IDS must not be empty when ENFORCE_PRO_TIER is on")
 	}
 	if c.DaemonTTLDays, err = envInt("DAEMON_TTL_DAYS", 0); err != nil {
 		return nil, err
@@ -169,6 +199,22 @@ func envInt(key string, def int) (int, error) {
 		return 0, fmt.Errorf("config: %s is not a valid integer: %w", key, err)
 	}
 	return v, nil
+}
+
+// envCSV 逗号分隔列表环境变量(空段剔除,去首尾空白)。
+func envCSV(key, def string) []string {
+	raw := strings.TrimSpace(os.Getenv(key))
+	if raw == "" {
+		raw = def
+	}
+	parts := strings.Split(raw, ",")
+	out := make([]string, 0, len(parts))
+	for _, p := range parts {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 func envInt64(key string, def int64) (int64, error) {

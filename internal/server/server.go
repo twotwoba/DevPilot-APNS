@@ -20,6 +20,7 @@ import (
 
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
 	"github.com/twotwoba/DevPilot-APNS/internal/pairing"
+	"github.com/twotwoba/DevPilot-APNS/internal/proentitlement"
 	"github.com/twotwoba/DevPilot-APNS/internal/ratelimit"
 	"github.com/twotwoba/DevPilot-APNS/internal/store"
 	"github.com/twotwoba/DevPilot-APNS/internal/wss"
@@ -52,6 +53,11 @@ type Config struct {
 	MetricsToken string
 	// Ready 是额外的就绪检查（如 APNs 密钥可用性）；为空时只检查数据库。
 	Ready func() error
+	// ProVerifier 非 nil 时启用 Pro 档位收据验签(官方部署):客户端自报
+	// tier=pro 必须附 Apple 签名的 StoreKit 2 交易 JWS,验签通过才落 pro,
+	// 否则配对静默降 free、token 改档 422。nil = 不验(自建部署,客户端
+	// 自报直通——v1 行为)。
+	ProVerifier *proentitlement.Verifier
 }
 
 // Server 实现 http.Handler。
@@ -178,6 +184,9 @@ type pairRequest struct {
 	APNSToken  string `json:"apns_token"`
 	DeviceName string `json:"device_name"`
 	Tier       string `json:"tier"`
+	// ProJWS Apple 签名的 StoreKit 2 交易凭证(ProStore.currentEntitlements
+	// 的 jwsRepresentation)。仅 ENFORCE_PRO_TIER 部署消费,自建忽略。
+	ProJWS string `json:"pro_jws,omitempty"`
 }
 
 func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
@@ -194,11 +203,14 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// 档位由 App 配对时提交(空=free;非法值拒绝,防拼写错误静默降档)。
+	// 验签部署(verifier 非 nil)上自报 pro 还须过收据闸(缺失/失败降 free,
+	// 配对不因此失败);自建部署 verifier 为 nil 直通。
 	tier, ok := store.ParseTier(req.Tier)
 	if !ok {
 		writeError(w, http.StatusBadRequest, "invalid tier (empty or free|pro)")
 		return
 	}
+	tier = s.resolveTier(tier, req.ProJWS)
 	now := s.now().Unix()
 	secret, err := pairing.NewSecret()
 	if err != nil {
@@ -229,13 +241,36 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.log.Info("device paired", "daemon_id", daemon.ID, "device_id", deviceID, "device_name", name, "tier", tier)
+	// tier 回显实际落库档位:验签部署上客户端声称 pro 被降 free 时可对齐
 	writeJSON(w, http.StatusCreated, map[string]any{
 		"device_id":         deviceID,
 		"device_credential": pairing.DeviceCredential(deviceID, secret),
 		"daemon_id":         daemon.ID,
 		"daemon_name":       daemon.Name,
+		"tier":              string(tier),
 		"server_ts":         now,
 	})
+}
+
+// resolveTier Pro 档位收据闸(唯一裁决点,pair 与 token 改档共用):
+// 验签部署上自报 pro 必须持有 Apple 签名的有效交易 JWS;缺失/失败降 free
+// 并记日志。free 恒放行(降档永远不该被挡);verifier 为 nil(自建)直通。
+func (s *Server) resolveTier(claimed store.Tier, proJWS string) store.Tier {
+	if s.cfg.ProVerifier == nil || claimed != store.TierPro {
+		return claimed
+	}
+	if strings.TrimSpace(proJWS) == "" {
+		s.log.Warn("pro tier claimed without receipt, downgrading to free")
+		return store.TierFree
+	}
+	ent, err := s.cfg.ProVerifier.Verify(proJWS)
+	if err != nil {
+		s.log.Warn("pro receipt verification failed, downgrading to free", "err", err)
+		return store.TierFree
+	}
+	s.log.Info("pro receipt verified",
+		"product_id", ent.ProductID, "environment", ent.Environment)
+	return store.TierPro
 }
 
 // ---------- WebSocket ----------
@@ -421,6 +456,8 @@ type deviceTokenRequest struct {
 	APNSToken string `json:"apns_token"`
 	// Tier 可选:App 权益翻转时同步档位;留空不触碰(旧版 App 兼容)。
 	Tier string `json:"tier,omitempty"`
+	// ProJWS 升 pro 时验签用;降 free 不需要(降档不该被挡)。
+	ProJWS string `json:"pro_jws,omitempty"`
 }
 
 // handleDeviceToken App 重新上报 APNs token(410 剪枝后、重装、换机)。
@@ -448,6 +485,14 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 		var ok bool
 		if tier, ok = store.ParseTier(req.Tier); !ok {
 			writeError(w, http.StatusBadRequest, "invalid tier")
+			return
+		}
+		// 验签部署上升 pro 须过收据闸。与 pair 不同,这里不静默降级而是
+		// 422:客户端在「权益同步」语义下需要知道升档没成(好下次再收敛);
+		// 422 不写任何库(token/tier 都不碰),客户端静默容错,时机再试。
+		if s.cfg.ProVerifier != nil && tier == store.TierPro &&
+			s.resolveTier(tier, req.ProJWS) != store.TierPro {
+			writeError(w, http.StatusUnprocessableEntity, "pro tier requires a valid receipt")
 			return
 		}
 	}

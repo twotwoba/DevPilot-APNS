@@ -65,7 +65,9 @@ type Daemon struct {
 	CredHash  string `json:"cred_hash"`
 	CreatedAt int64  `json:"created_at"`
 	LastSeq   int64  `json:"last_seq"`
-	// Tier 是配额档位,App 配对时提交(v1 阶段客户端自声明,收据验证属后续硬化)。
+	// Tier 是配额档位,App 配对时提交。官方部署(ENFORCE_PRO_TIER=1)经
+	// proentitlement 验 Apple 签名交易 JWS 后才落 pro;自建部署保持客户端
+	// 自声明直通(App 侧自建恒报 pro)。
 	Tier Tier `json:"tier,omitempty"`
 	// LastSeenAt 是 daemon 侧最近活跃时刻(WSS 建连/登记配对会话时刷新),TTL 清理依据。
 	LastSeenAt int64 `json:"last_seen_at,omitempty"`
@@ -461,6 +463,36 @@ func (s *Store) SetDaemonTier(id string, tier Tier, now int64) error {
 		d.LastSeenAt = now
 		return putJSON(tx.Bucket(bucketDaemons), id, d)
 	})
+}
+
+// ResetAllDaemonTiers 把所有 daemon 档位清回 free,返回清掉的条数。
+// 一次性运维开关(RESET_TIERS_ON_BOOT):部署收据验签前清掉存量「客户端
+// 自报」档位——里面混着白嫖的;正版用户 App 升级后经权益同步(带 JWS)
+// 自动回 pro。不触碰 LastSeenAt(档位清理不是活跃信号)。
+func (s *Store) ResetAllDaemonTiers() (int, error) {
+	reset := 0
+	err := s.db.Update(func(tx *bolt.Tx) error {
+		b := tx.Bucket(bucketDaemons)
+		return b.ForEach(func(k, v []byte) error {
+			if len(v) == 0 {
+				return nil
+			}
+			var d Daemon
+			if err := json.Unmarshal(v, &d); err != nil {
+				return err
+			}
+			if d.Tier != TierPro {
+				return nil
+			}
+			d.Tier = TierFree
+			reset++
+			return putJSON(b, string(k), d)
+		})
+	})
+	if err != nil {
+		return 0, err
+	}
+	return reset, nil
 }
 
 // UpdateDeviceAPNSToken 覆写设备的 APNs token(App 重新上报/410 后补报)。

@@ -419,6 +419,42 @@ func TestSetDaemonTier(t *testing.T) {
 	}
 }
 
+// TestResetAllDaemonTiers 一次性清档:pro 全清 free、free 原样、计数正确、
+// 不触碰 LastSeenAt(档位清理不是活跃信号)。
+func TestResetAllDaemonTiers(t *testing.T) {
+	s := newStore(t)
+	seedPairing(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", "dd_0123456789abcdef0123456789abcdef")
+	seedPairing(t, s, "ZYXWVUTSRQPONMLKJIHGFEDCBA", "dd_ffeeddfeeddfeeddfeeddfeeddfeedd")
+
+	proDaemon, _ := pairDeviceTier(t, s, "ABCDEFGHIJKLMNOPQRSTUVWXYZ", TierPro)
+	if err := s.SetDaemonTier(proDaemon.ID, TierPro, testNow+300); err != nil {
+		t.Fatal(err)
+	}
+	freeDaemon, _ := pairDeviceTier(t, s, "ZYXWVUTSRQPONMLKJIHGFEDCBA", TierFree)
+
+	reset, err := s.ResetAllDaemonTiers()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reset != 1 {
+		t.Fatalf("only the pro daemon should be reset, got %d", reset)
+	}
+	d, err := s.Daemon(proDaemon.ID)
+	if err != nil || d.Tier != TierFree {
+		t.Fatalf("pro daemon not reset: %+v err=%v", d, err)
+	}
+	if d.LastSeenAt != testNow+300 {
+		t.Fatalf("LastSeenAt must be untouched: %d", d.LastSeenAt)
+	}
+	if f, err := s.Daemon(freeDaemon.ID); err != nil || f.Tier != TierFree {
+		t.Fatalf("free daemon must stay free: %+v err=%v", f, err)
+	}
+	// 幂等:再清一遍零改写
+	if reset, err := s.ResetAllDaemonTiers(); err != nil || reset != 0 {
+		t.Fatalf("second sweep must be a no-op: reset=%d err=%v", reset, err)
+	}
+}
+
 func TestUpdateDeviceAPNSToken(t *testing.T) {
 	s := newStore(t)
 	code := "ABCDEFGHIJKLMNOPQRSTUVWXYZ"

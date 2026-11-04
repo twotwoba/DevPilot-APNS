@@ -26,6 +26,7 @@ import (
 	"github.com/twotwoba/DevPilot-APNS/internal/config"
 	"github.com/twotwoba/DevPilot-APNS/internal/deliver"
 	"github.com/twotwoba/DevPilot-APNS/internal/metrics"
+	"github.com/twotwoba/DevPilot-APNS/internal/proentitlement"
 	"github.com/twotwoba/DevPilot-APNS/internal/quota"
 	"github.com/twotwoba/DevPilot-APNS/internal/ratelimit"
 	"github.com/twotwoba/DevPilot-APNS/internal/server"
@@ -106,6 +107,34 @@ func runServe(args []string) int {
 	}
 	defer st.Close()
 
+	// 一次性清档(RESET_TIERS_ON_BOOT=1):部署收据验签前把存量「客户端自报」
+	// 档位全部清回 free(白嫖配对一并清)。正版用户 App 升级后经权益同步
+	// 自动回 pro。清完务必移除该 env 重启,否则每次启动都清。
+	if cfg.ResetTiersOnBoot {
+		reset, err := st.ResetAllDaemonTiers()
+		if err != nil {
+			logger.Error("failed to reset daemon tiers", "err", err)
+			return 1
+		}
+		logger.Warn("RESET_TIERS_ON_BOOT: all daemon tiers reset to free", "count", reset)
+	}
+
+	// Pro 档位收据验签器(官方部署 ENFORCE_PRO_TIER=1;自建不开,客户端自报直通)。
+	var proVerifier *proentitlement.Verifier
+	if cfg.EnforceProTier {
+		proVerifier, err = proentitlement.NewVerifier(proentitlement.Config{
+			BundleID:     cfg.APNSBundleID,
+			ProductIDs:   cfg.ProProductIDs,
+			Environments: cfg.JWSAllowedEnvironments,
+		})
+		if err != nil {
+			logger.Error("failed to build pro entitlement verifier", "err", err)
+			return 1
+		}
+		logger.Info("pro tier enforcement enabled",
+			"products", cfg.ProProductIDs, "environments", cfg.JWSAllowedEnvironments)
+	}
+
 	m := metrics.New()
 
 	// 托管多租户配额：事件速率 + 日推送上限,内存态(阈值见 config 注释)。
@@ -185,6 +214,7 @@ func runServe(args []string) int {
 		Bans:              bans,
 		TrustedProxyCount: cfg.TrustedProxyCount,
 		MetricsToken:      cfg.MetricsToken,
+		ProVerifier:       proVerifier,
 	})
 	if err != nil {
 		logger.Error("failed to initialize server", "err", err)
