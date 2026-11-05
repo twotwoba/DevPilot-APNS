@@ -95,7 +95,7 @@ func FromEnv() (*Config, error) {
 	}
 	c.APNSMock = mock
 
-	// 配额参数:锚点 free 10 事件/60s + 500 推送/天,Pro 60/60s + 5000/天。
+	// 配额参数:锚点 free 10 事件/60s + 10 推送/天,Pro 60/60s + 3000/天。
 	if c.RateEventFree, err = envInt("RATE_EVENT_FREE", 10); err != nil {
 		return nil, err
 	}
@@ -107,10 +107,10 @@ func FromEnv() (*Config, error) {
 		return nil, err
 	}
 	c.RateEventWindow = time.Duration(windowSec) * time.Second
-	if c.QuotaDailyFree, err = envInt64("QUOTA_DAILY_FREE", 500); err != nil {
+	if c.QuotaDailyFree, err = envInt64("QUOTA_DAILY_FREE", 10); err != nil {
 		return nil, err
 	}
-	if c.QuotaDailyPro, err = envInt64("QUOTA_DAILY_PRO", 5000); err != nil {
+	if c.QuotaDailyPro, err = envInt64("QUOTA_DAILY_PRO", 3000); err != nil {
 		return nil, err
 	}
 	if c.QuotaExemptApprovals, err = envBool("QUOTA_EXEMPT_APPROVALS", true); err != nil {

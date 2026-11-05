@@ -52,7 +52,7 @@ Defaults target "one relay serving many users"; a self-hosted single-user setup 
 | Dimension | Default | Env vars | Meaning |
 |---|---|---|---|
 | Event rate | free 10/60s, pro 60/60s | `RATE_EVENT_FREE/PRO`, `RATE_EVENT_WINDOW_SECONDS` | per-daemon token bucket; over-limit returns `AckRejected` (daemon drops terminally, no retry storm) |
-| Daily push quota | free 10/day, pro 5000/day | `QUOTA_DAILY_FREE/PRO` | per-daemon UTC calendar day; only gates APNs pushes; WSS realtime / inbox / resync are unaffected |
+| Daily push quota | free 10/day, pro 3000/day | `QUOTA_DAILY_FREE/PRO` | per-daemon UTC calendar day; only gates APNs pushes; WSS realtime / inbox / resync are unaffected |
 | Approval exemption | on | `QUOTA_EXEMPT_APPROVALS` | `approval_required/task_complete` bypass the rate gate but **not** the daily quota |
 | Pairing rate limit | 15/10 per minute per IP | `PAIR_SESSION_LIMIT/PAIR_ATTEMPT_LIMIT` | fixed window |
 | IP ban | 100 4xx·5xx / 5min → ban 24h | `BAN_THRESHOLD/WINDOW_SECONDS/TTL_SECONDS`, `BAN_ENABLED` | fail2ban style; whole IPv4 address, IPv6 /64 aggregation; loopback exempt |
