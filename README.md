@@ -80,8 +80,3 @@ The APNs client can run the delivery path without a `.p8` via `APNS_MOCK=1`; uni
   so **this repo must be released before Hook**.
 
 Server upgrades: `docker compose pull && docker compose up -d`.
-
-## Documentation
-
-- [Docs/中继服务端与APNs推送设计.md](Docs/中继服务端与APNs推送设计.md) — core design (Chinese): component skeleton, WSS protocol, APNs client, delivery semantics, milestones; implemented in this repo.
-- Internal progress log (Chinese): [Docs/进度状态.md](Docs/进度状态.md).
