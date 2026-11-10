@@ -134,7 +134,8 @@ func TestExtractOptions(t *testing.T) {
 func TestPlainPreview(t *testing.T) {
 	in := "## Goal\n\n- ship **it**\n- keep `state`\n\n```swift\nlet a = 1\n```\nSee [docs](https://example.com)."
 	got := PlainPreview(in, 200)
-	want := "Goal ship it keep state let a = 1 See docs."
+	// 列表项补项目符：锁屏正文折行连排，纯空格会把多条要求粘成一句
+	want := "Goal • ship it • keep state let a = 1 See docs."
 	if got != want {
 		t.Fatalf("PlainPreview:\n got  %q\n want %q", got, want)
 	}

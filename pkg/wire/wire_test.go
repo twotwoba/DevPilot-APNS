@@ -221,10 +221,20 @@ func TestCloudApprovalPushShapes(t *testing.T) {
 	if cs := start.APS.ContentState; cs.State != CloudStateNeedsYou || cs.ExpiresAt != 1000 {
 		t.Fatalf("needsYou content-state 不符: %+v", cs)
 	}
+	// start 必须带 alert：缺这个键 APNs 照样 200，iOS 端静默不起卡。
+	if start.APS.Alert == nil {
+		t.Fatal("push-to-start 必须带 alert（Apple 文档对 start 事件的要求）")
+	}
+	if start.APS.Alert.Title != "支付重构" || start.APS.Alert.Body != "Claude wants to run Bash: make deploy" {
+		t.Fatalf("start alert 文案不符: %+v", start.APS.Alert)
+	}
 
 	update := CloudApprovalPushFor(approval, 200, false)
 	if update.APS.Event != "update" || update.APS.Attributes != nil {
 		t.Fatalf("update 推送不应带 attributes: %+v", update.APS)
+	}
+	if update.APS.Alert != nil {
+		t.Fatalf("update 推送不应带 alert: %+v", update.APS.Alert)
 	}
 
 	for _, c := range []struct {

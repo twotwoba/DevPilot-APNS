@@ -157,9 +157,12 @@ func PlainPreview(s string, max int) string {
 			inFence = !inFence
 			continue
 		}
+		isList := false
 		if !inFence {
 			t = strings.TrimSpace(strings.TrimLeft(t, "#"))
-			t = stripListMarker(t)
+			if rest, ok := stripListMarker(t); ok {
+				t, isList = rest, true
+			}
 			t = strings.TrimSpace(strings.TrimLeft(t, ">"))
 		}
 		if t == "" {
@@ -168,6 +171,11 @@ func PlainPreview(s string, max int) string {
 		if b.Len() > 0 {
 			b.WriteString(" ")
 		}
+		if isList {
+			// 列表项保留一个项目符：锁屏正文是折行连排的，纯空格会把
+			// 多条要求粘成一句话（2026-11-10 用户截图实况）。
+			b.WriteString("• ")
+		}
 		b.WriteString(t)
 	}
 	out := stripMarkdownLinks(b.String())
@@ -175,19 +183,20 @@ func PlainPreview(s string, max int) string {
 	return Truncate(strings.Join(strings.Fields(out), " "), max)
 }
 
-// stripListMarker 去掉行首的列表符（- / * / + / 1. / 1)）。
-func stripListMarker(t string) string {
+// stripListMarker 去掉行首的列表符（- / * / + / 1. / 1)），
+// 命中时额外返回 true——调用方据此补一个项目符，保住列表的视觉分段。
+func stripListMarker(t string) (string, bool) {
 	if len(t) >= 2 && (t[0] == '-' || t[0] == '*' || t[0] == '+') && (t[1] == ' ' || t[1] == '\t') {
-		return strings.TrimSpace(t[2:])
+		return strings.TrimSpace(t[2:]), true
 	}
 	i := 0
 	for i < len(t) && t[i] >= '0' && t[i] <= '9' {
 		i++
 	}
 	if i > 0 && i+1 < len(t) && (t[i] == '.' || t[i] == ')') && (t[i+1] == ' ' || t[i+1] == '\t') {
-		return strings.TrimSpace(t[i+2:])
+		return strings.TrimSpace(t[i+2:]), true
 	}
-	return t
+	return t, false
 }
 
 // stripMarkdownLinks 把 [text](url) 收敛成 text；畸形输入原样返回。

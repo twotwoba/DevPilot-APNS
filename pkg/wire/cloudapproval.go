@@ -37,15 +37,27 @@ type CloudApprovalState struct {
 	UpdatedAt int64 `json:"updatedAt"`
 }
 
+// CloudApprovalAlert 是 start 事件必需的 alert 体。
+//
+// Apple 文档对 start 事件明写「Include an alert in the JSON payload」:
+// 缺这一个键 APNs 依然回 200,但 iOS 端会静默丢弃整次起卡——2026-11-10 实测
+// (两次 push-to-start 均 200,锁屏无卡)。故意不带 sound:同一事件另有一条
+// 真正的审批 alert 推送(带声音+按钮),这里只补足起卡必需的文案。
+type CloudApprovalAlert struct {
+	Title string `json:"title"`
+	Body  string `json:"body"`
+}
+
 // CloudApprovalAPS 是 APNs liveactivity 推送的 aps 体（云审批卡）。
 type CloudApprovalAPS struct {
-	Timestamp      int64              `json:"timestamp"`
-	Event          string             `json:"event"` // start|update|end
-	ContentState   CloudApprovalState `json:"content-state"`
-	Attributes     map[string]any     `json:"attributes,omitempty"`      // 仅 push-to-start 的 start 事件需要
-	AttributesType string             `json:"attributes-type,omitempty"` // 同上，= CloudApprovalAttributesType
-	StaleDate      int64              `json:"stale-date,omitempty"`
-	DismissalDate  int64              `json:"dismissal-date,omitempty"`
+	Timestamp      int64               `json:"timestamp"`
+	Event          string              `json:"event"` // start|update|end
+	ContentState   CloudApprovalState  `json:"content-state"`
+	Alert          *CloudApprovalAlert `json:"alert,omitempty"`          // 仅 start 必需
+	Attributes     map[string]any      `json:"attributes,omitempty"`     // 仅 push-to-start 的 start 事件需要
+	AttributesType string              `json:"attributes-type,omitempty"` // 同上，= CloudApprovalAttributesType
+	StaleDate      int64               `json:"stale-date,omitempty"`
+	DismissalDate  int64               `json:"dismissal-date,omitempty"`
 }
 
 // CloudApprovalPush 是完整的云审批 LA 推送体。
@@ -145,6 +157,11 @@ func CloudApprovalPushFor(env Envelope, now int64, isStart bool) CloudApprovalPu
 			"daemonId":  env.DaemonID,
 		}
 		aps.AttributesType = CloudApprovalAttributesType
+		// start 必须带 alert,否则系统静默不起卡(见 CloudApprovalAlert 注释)。
+		aps.Alert = &CloudApprovalAlert{
+			Title: ApprovalTitle(env),
+			Body:  ApprovalBody(env),
+		}
 	}
 	return CloudApprovalPush{APS: aps}
 }
