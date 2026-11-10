@@ -396,3 +396,26 @@ func TestTruncateBytes(t *testing.T) {
 		t.Fatalf("UTF-8 boundary truncation wrong: %q", got)
 	}
 }
+
+// TestEndpointForRequestEnvironment 请求级环境(设备 token 的真实签发环境)
+// 优先于客户端全局配置;测试注入的 Endpoint 仍最高优先。
+func TestEndpointForRequestEnvironment(t *testing.T) {
+	c, err := New(Config{Mock: true, Environment: "production"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c.endpointFor("sandbox"); got != sandboxEndpoint {
+		t.Fatalf("request sandbox = %q", got)
+	}
+	if got := c.endpointFor(""); got != productionEndpoint {
+		t.Fatalf("empty env should fall back to global = %q", got)
+	}
+
+	c2, err := New(Config{Mock: true, Environment: "sandbox", Endpoint: "https://fake.example/"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := c2.endpointFor("production"); got != "https://fake.example" {
+		t.Fatalf("injected endpoint should win = %q", got)
+	}
+}

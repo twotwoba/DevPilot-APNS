@@ -191,7 +191,10 @@ type pairRequest struct {
 	Code       string `json:"code"`
 	APNSToken  string `json:"apns_token"`
 	DeviceName string `json:"device_name"`
-	Tier       string `json:"tier"`
+	// APNSEnv 是 token 的签发环境（production / sandbox）。旧 App 不带 →
+	// 空串 → 落库为空，发送时回落全局 APNS_ENVIRONMENT。
+	APNSEnv string `json:"apns_env,omitempty"`
+	Tier    string `json:"tier"`
 	// ProJWS Apple 签名的 StoreKit 2 交易凭证(ProStore.currentEntitlements
 	// 的 jwsRepresentation)。仅 ENFORCE_PRO_TIER 部署消费,自建忽略。
 	ProJWS string `json:"pro_jws,omitempty"`
@@ -208,6 +211,11 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 	}
 	if !validCode(canonicalCode(req.Code)) {
 		writeError(w, http.StatusBadRequest, "invalid pairing code format")
+		return
+	}
+	apnsEnv, ok := parseAPNSEnv(req.APNSEnv)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid apns_env (production|sandbox)")
 		return
 	}
 	// 档位由 App 配对时提交(空=free;非法值拒绝,防拼写错误静默降档)。
@@ -234,6 +242,7 @@ func (s *Server) handlePair(w http.ResponseWriter, r *http.Request) {
 		ID:        deviceID,
 		CredHash:  pairing.SecretHash(secret),
 		APNSToken: strings.TrimSpace(req.APNSToken),
+		APNSEnv:   apnsEnv,
 		Name:      name,
 	}
 	daemon, _, err := s.cfg.Store.Pair(pairing.CodeHash(canonicalCode(req.Code)), device, tier, now)
@@ -470,10 +479,25 @@ func (s *Server) handleDecisionREST(w http.ResponseWriter, r *http.Request) {
 
 type deviceTokenRequest struct {
 	APNSToken string `json:"apns_token"`
+	// APNSEnv 是 token 的签发环境；空串不触碰原值（旧 App 兼容）。
+	APNSEnv string `json:"apns_env,omitempty"`
 	// Tier 可选:App 权益翻转时同步档位;留空不触碰(旧版 App 兼容)。
 	Tier string `json:"tier,omitempty"`
 	// ProJWS 升 pro 时验签用;降 free 不需要(降档不该被挡)。
 	ProJWS string `json:"pro_jws,omitempty"`
+}
+
+// parseAPNSEnv 校验 App 上报的 APNs 环境。空串合法（旧 App 不带字段），
+// 其余只认 production / sandbox——token 只在签发环境有效，写错会导致
+// 全部推送 BadDeviceToken。
+func parseAPNSEnv(raw string) (string, bool) {
+	env := strings.TrimSpace(raw)
+	switch env {
+	case "", "production", "sandbox":
+		return env, true
+	default:
+		return "", false
+	}
 }
 
 // handleDeviceToken App 重新上报 APNs token(410 剪枝后、重装、换机)。
@@ -490,6 +514,11 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 	token := strings.TrimSpace(req.APNSToken)
 	if token == "" || len(token) > 256 {
 		writeError(w, http.StatusBadRequest, "invalid apns_token")
+		return
+	}
+	apnsEnv, ok := parseAPNSEnv(req.APNSEnv)
+	if !ok {
+		writeError(w, http.StatusBadRequest, "invalid apns_env (production|sandbox)")
 		return
 	}
 	// 档位刷新:订阅到期降 free / 续费升 pro,配额随之收敛,不需要重新扫码。
@@ -512,7 +541,7 @@ func (s *Server) handleDeviceToken(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	if err := s.cfg.Store.UpdateDeviceAPNSToken(device.ID, token, s.now().Unix()); err != nil {
+	if err := s.cfg.Store.UpdateDeviceAPNSToken(device.ID, token, apnsEnv, s.now().Unix()); err != nil {
 		s.internal(w, "failed to update APNs token", err)
 		return
 	}

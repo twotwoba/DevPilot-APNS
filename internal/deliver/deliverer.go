@@ -234,6 +234,7 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 
 	res := d.push(tier, approvalPushKind, device.ID, env, apns.Request{
 		DeviceToken: device.APNSToken,
+		Environment: device.APNSEnv,
 		Topic:       d.cfg.Pusher.TopicFor(),
 		PushType:    "alert",
 		Priority:    priority,
@@ -250,20 +251,45 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 }
 
 // approvalBody 生成审批通知正文，只使用摘要白名单字段。
+//
+// 摘要可能是 Markdown / JSON 原文（plan、问题选项），锁屏上逐字显示很难读，
+// 统一过 PlainPreview 压成单行自然语言；三种工具各给一句人话。
 func approvalBody(env wire.Envelope) string {
+	agent := displayAgent(env.Agent)
+	summary := wire.PlainPreview(env.Payload.CommandSummary, 200)
+	switch env.Payload.ToolName {
+	case "ExitPlanMode":
+		if summary == "" {
+			return "Plan ready for review"
+		}
+		return wire.Truncate("Plan ready for review — "+summary, 200)
+	case "AskUserQuestion":
+		if summary == "" {
+			return agent + " has a question"
+		}
+		return wire.Truncate(agent+" has a question — "+summary, 200)
+	}
 	tool := env.Payload.ToolName
 	if tool == "" {
 		tool = "a tool"
 	}
-	agent := string(env.Agent)
-	if agent == "" {
-		agent = "Agent"
-	}
-	body := fmt.Sprintf("%s requests to run %s", agent, tool)
-	if summary := env.Payload.CommandSummary; summary != "" {
+	body := fmt.Sprintf("%s wants to run %s", agent, tool)
+	if summary != "" {
 		body += ": " + summary
 	}
 	return wire.Truncate(body, 200)
+}
+
+// displayAgent 把 wire 的 agent 标识换成锁屏可见的抬头。
+func displayAgent(a wire.Agent) string {
+	switch a {
+	case wire.AgentClaude:
+		return "Claude"
+	case wire.AgentCodex:
+		return "Codex"
+	default:
+		return "Agent"
+	}
 }
 
 // closedBody 生成审批关闭替换推送的正文,按 close reason 映射终态文案。
@@ -307,6 +333,7 @@ func (d *Deliverer) sendLiveActivity(tier store.Tier, device store.Device, env w
 		d.throttle.Do(key, func() {
 			res := d.push(tier, laPushKind, device.ID, env, apns.Request{
 				DeviceToken: token,
+				Environment: device.APNSEnv,
 				Topic:       d.cfg.Pusher.LiveActivityTopic(),
 				PushType:    "liveactivity",
 				Priority:    priority,
@@ -398,6 +425,7 @@ func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env 
 		d.throttle.Do(key, func() {
 			res := d.push(tier, cloudLAPushKind, device.ID, env, apns.Request{
 				DeviceToken: token,
+				Environment: device.APNSEnv,
 				Topic:       d.cfg.Pusher.LiveActivityTopic(),
 				PushType:    "liveactivity",
 				Priority:    priority,
@@ -420,6 +448,7 @@ func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env 
 		push := wire.CloudApprovalPushFor(env, now, true)
 		res := d.push(tier, cloudLAPushKind, device.ID, env, apns.Request{
 			DeviceToken: device.PushToStartToken,
+			Environment: device.APNSEnv,
 			Topic:       d.cfg.Pusher.LiveActivityTopic(),
 			PushType:    "liveactivity",
 			Priority:    priority,

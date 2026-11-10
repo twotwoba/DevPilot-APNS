@@ -104,9 +104,12 @@ func TestExtractOptions(t *testing.T) {
 		`{"command":"git status"}`,                                          // 非 questions 形态
 		`{"questions":[]}`,                                                  // 空问
 		`{"questions":[{"question":"Q1"},{"question":"Q2"}]}`,               // 多问
-		`{"questions":[{"options":[{"label":"a"},{"label":""}]}]}`,          // 空 label
-		`{"questions":[{"options":[]}]}`,                                    // 零选项
-		`{"questions":[{"options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"},{"label":"e"},{"label":"f"},{"label":"g"}]}]}`, // 超 6 项
+		`{"questions":[{"question":"Q","multiSelect":true,"options":[{"label":"a"}]}]}`,   // 多选
+		`{"questions":[{"question":"Q","multi_select":true,"options":[{"label":"a"}]}]}`,  // 多选（蛇形）
+		`{"questions":[{"options":[{"label":"a"}]}]}`,                       // 无题面（answers 无处落键）
+		`{"questions":[{"question":"Q","options":[{"label":"a"},{"label":""}]}]}`, // 空 label
+		`{"questions":[{"question":"Q","options":[]}]}`,                     // 零选项
+		`{"questions":[{"question":"Q","options":[{"label":"a"},{"label":"b"},{"label":"c"},{"label":"d"},{"label":"e"},{"label":"f"},{"label":"g"}]}]}`, // 超 6 项
 	}
 	for _, in := range cases {
 		if got := ExtractOptions(json.RawMessage(in)); got != nil {
@@ -114,10 +117,32 @@ func TestExtractOptions(t *testing.T) {
 		}
 	}
 
+	// 显式 multiSelect=false 仍可出选项
+	if got := ExtractOptions(json.RawMessage(`{"questions":[{"question":"Q","multiSelect":false,"options":[{"label":"a"}]}]}`)); !reflect.DeepEqual(got, []string{"a"}) {
+		t.Fatalf("multiSelect=false: got %#v", got)
+	}
+
 	// 长 label 截到 MaxOptionRunes 且带省略号
 	long := strings.Repeat("选", MaxOptionRunes+10)
-	got := ExtractOptions(json.RawMessage(`{"questions":[{"options":[{"label":"` + long + `"}]}]}`))
+	got := ExtractOptions(json.RawMessage(`{"questions":[{"question":"Q","options":[{"label":"` + long + `"}]}]}`))
 	if len(got) != 1 || len([]rune(got[0])) > MaxOptionRunes || !strings.HasSuffix(got[0], "…") {
 		t.Fatalf("long label should be truncated: %#v", got)
+	}
+}
+
+// TestPlainPreview 通知预览不得露出 markdown 记号。
+func TestPlainPreview(t *testing.T) {
+	in := "## Goal\n\n- ship **it**\n- keep `state`\n\n```swift\nlet a = 1\n```\nSee [docs](https://example.com)."
+	got := PlainPreview(in, 200)
+	want := "Goal ship it keep state let a = 1 See docs."
+	if got != want {
+		t.Fatalf("PlainPreview:\n got  %q\n want %q", got, want)
+	}
+	if long := PlainPreview(strings.Repeat("a", 30), 10); len([]rune(long)) != 10 || !strings.HasSuffix(long, "…") {
+		t.Fatalf("PlainPreview cap: %q", long)
+	}
+	// 畸形链接原样保留，不吞正文
+	if got := PlainPreview("see [broken text", 50); got != "see [broken text" {
+		t.Fatalf("malformed link: %q", got)
 	}
 }

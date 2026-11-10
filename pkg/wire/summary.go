@@ -112,6 +112,17 @@ func ExtractOptions(raw json.RawMessage) []string {
 	if !ok {
 		return nil
 	}
+	// 多选必须回答案数组，App 目前只能回单个标签；半残选项不如二值诚实。
+	if ms, _ := q["multiSelect"].(bool); ms {
+		return nil
+	}
+	if ms, _ := q["multi_select"].(bool); ms {
+		return nil
+	}
+	// 答案按问题文本回写，没有题面就无法构造 answers；回落二值。
+	if question, _ := q["question"].(string); strings.TrimSpace(question) == "" {
+		return nil
+	}
 	os, ok := q["options"].([]any)
 	if !ok || len(os) == 0 || len(os) > 6 {
 		return nil
@@ -130,6 +141,74 @@ func ExtractOptions(raw json.RawMessage) []string {
 		out = append(out, Truncate(l, MaxOptionRunes))
 	}
 	return out
+}
+
+// PlainPreview 把 markdown 正文压成单行纯文本，供通知正文/锁屏卡使用。
+//
+// 审批正文（尤其 ExitPlanMode 的 plan）是 markdown：直接塞进 APNs alert
+// 会露出 `##`、`- `、`**`、代码栅栏等记号。这里只做展示层清洗——不去动
+// 原始摘要字段，详情页仍按完整 markdown 渲染。
+func PlainPreview(s string, max int) string {
+	var b strings.Builder
+	inFence := false
+	for _, line := range strings.Split(s, "\n") {
+		t := strings.TrimSpace(line)
+		if strings.HasPrefix(t, "```") || strings.HasPrefix(t, "~~~") {
+			inFence = !inFence
+			continue
+		}
+		if !inFence {
+			t = strings.TrimSpace(strings.TrimLeft(t, "#"))
+			t = stripListMarker(t)
+			t = strings.TrimSpace(strings.TrimLeft(t, ">"))
+		}
+		if t == "" {
+			continue
+		}
+		if b.Len() > 0 {
+			b.WriteString(" ")
+		}
+		b.WriteString(t)
+	}
+	out := stripMarkdownLinks(b.String())
+	out = strings.NewReplacer("**", "", "__", "", "~~", "", "`", "").Replace(out)
+	return Truncate(strings.Join(strings.Fields(out), " "), max)
+}
+
+// stripListMarker 去掉行首的列表符（- / * / + / 1. / 1)）。
+func stripListMarker(t string) string {
+	if len(t) >= 2 && (t[0] == '-' || t[0] == '*' || t[0] == '+') && (t[1] == ' ' || t[1] == '\t') {
+		return strings.TrimSpace(t[2:])
+	}
+	i := 0
+	for i < len(t) && t[i] >= '0' && t[i] <= '9' {
+		i++
+	}
+	if i > 0 && i+1 < len(t) && (t[i] == '.' || t[i] == ')') && (t[i+1] == ' ' || t[i+1] == '\t') {
+		return strings.TrimSpace(t[i+2:])
+	}
+	return t
+}
+
+// stripMarkdownLinks 把 [text](url) 收敛成 text；畸形输入原样返回。
+func stripMarkdownLinks(s string) string {
+	for {
+		start := strings.IndexByte(s, '[')
+		if start < 0 {
+			return s
+		}
+		midRel := strings.Index(s[start:], "](")
+		if midRel < 0 {
+			return s
+		}
+		mid := start + midRel
+		endRel := strings.IndexByte(s[mid:], ')')
+		if endRel < 0 {
+			return s
+		}
+		end := mid + endRel
+		s = s[:start] + s[start+1:mid] + s[end+1:]
+	}
 }
 
 // summarizeAskUser 把 AskUserQuestion 的 tool_input 渲染成可读摘要。

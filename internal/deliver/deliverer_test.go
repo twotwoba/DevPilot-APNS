@@ -697,3 +697,28 @@ func TestCloudApprovalSessionTokenPreferred(t *testing.T) {
 		t.Fatalf("end push should target the session token: %+v", endReq)
 	}
 }
+
+// TestApprovalBodyBranches 通知正文按工具给自然语言,并剥离 Markdown/JSON 记号。
+func TestApprovalBodyBranches(t *testing.T) {
+	cases := []struct {
+		name    string
+		agent   wire.Agent
+		tool    string
+		summary string
+		want    string
+	}{
+		{"plan", wire.AgentClaude, "ExitPlanMode", "## Plan\n- **Step one**", "Plan ready for review — Plan Step one"},
+		{"plan empty", wire.AgentClaude, "ExitPlanMode", "", "Plan ready for review"},
+		{"question", wire.AgentClaude, "AskUserQuestion", "Which database?\n- Postgres", "Claude has a question — Which database? Postgres"},
+		{"tool", wire.AgentCodex, "Bash", "rm -rf build", "Codex wants to run Bash: rm -rf build"},
+		{"no tool", wire.Agent(""), "", "", "Agent wants to run a tool"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			env := wire.Envelope{Agent: tc.agent, Payload: wire.Payload{ToolName: tc.tool, CommandSummary: tc.summary}}
+			if got := approvalBody(env); got != tc.want {
+				t.Fatalf("approvalBody = %q want %q", got, tc.want)
+			}
+		})
+	}
+}

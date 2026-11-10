@@ -50,6 +50,10 @@ var ErrPayloadTooLarge = errors.New("apns: payload exceeds 4KB")
 type Request struct {
 	DeviceToken string
 	Topic       string
+	// Environment 覆盖客户端级环境（production / sandbox）；空串回落
+	// Config.Environment。设备 token 只在其签发环境有效——同一 relay
+	// 要同时服务 TestFlight（production）与 Debug 直装（sandbox）。
+	Environment string
 	// PushType 为 alert / liveactivity / background；为空按 alert 处理。
 	PushType string
 	// Priority 为 10（立即）或 5（省电）；0 时按 10 处理。
@@ -289,7 +293,7 @@ func (c *Client) sendOnce(ctx context.Context, req Request, payload []byte) (Res
 		return Result{}, ctx.Err()
 	}
 
-	url := c.endpoint() + "/3/device/" + req.DeviceToken
+	url := c.endpointFor(req.Environment) + "/3/device/" + req.DeviceToken
 	hreq, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
 	if err != nil {
 		return Result{}, fmt.Errorf("apns: failed to build request: %w", err)
@@ -364,11 +368,16 @@ func (c *Client) invalidateToken() {
 	c.tokenMu.Unlock()
 }
 
-func (c *Client) endpoint() string {
+// endpointFor 选择推送端点：测试注入优先，其次请求级环境（设备 token 的
+// 真实签发环境），最后回落客户端全局环境。
+func (c *Client) endpointFor(env string) string {
 	if c.cfg.Endpoint != "" {
 		return strings.TrimRight(c.cfg.Endpoint, "/")
 	}
-	if c.cfg.Environment == "sandbox" {
+	if env == "" {
+		env = c.cfg.Environment
+	}
+	if env == "sandbox" {
 		return sandboxEndpoint
 	}
 	return productionEndpoint

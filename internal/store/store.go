@@ -115,6 +115,9 @@ type Device struct {
 	DaemonID  string `json:"daemon_id"`
 	CredHash  string `json:"cred_hash"`
 	APNSToken string `json:"apns_token,omitempty"`
+	// APNSEnv 是该 token 的签发环境（production / sandbox）。空串 = 旧
+	// App 未上报，发送时回落 relay 全局 APNS_ENVIRONMENT。v0.4.6 增量。
+	APNSEnv string `json:"apns_env,omitempty"`
 	// PushToStartToken 是云审批 Live Activity 的 push-to-start token
 	// (Activity<CloudApprovalAttributes>.pushToStartToken,App 每次启动重报)。
 	PushToStartToken string `json:"push_to_start_token,omitempty"`
@@ -508,13 +511,17 @@ func (s *Store) ResetAllDaemonTiers() (int, error) {
 }
 
 // UpdateDeviceAPNSToken 覆写设备的 APNs token(App 重新上报/410 后补报)。
-func (s *Store) UpdateDeviceAPNSToken(id, token string, now int64) error {
+// env 非空时同步更新签发环境；空串保持原值(旧 App 不上报 apns_env)。
+func (s *Store) UpdateDeviceAPNSToken(id, token, env string, now int64) error {
 	return s.db.Update(func(tx *bolt.Tx) error {
 		var d Device
 		if err := getJSON(tx.Bucket(bucketDevices), id, &d); err != nil {
 			return err
 		}
 		d.APNSToken = token
+		if env != "" {
+			d.APNSEnv = env
+		}
 		d.LastSeenAt = now
 		return putJSON(tx.Bucket(bucketDevices), id, d)
 	})

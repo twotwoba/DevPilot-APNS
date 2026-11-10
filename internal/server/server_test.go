@@ -1093,3 +1093,73 @@ func TestDaemonWSRecordsObservedIP(t *testing.T) {
 		t.Fatalf("daemon last_ip not recorded: %+v err=%v", d, err)
 	}
 }
+
+// TestAPNSEnvPerDevice 配对与 token 上报都接受 apns_env 并落库;非法值 400
+// 且不消费配对码/不改原值;缺省(旧 App)保持原样回落全局环境。
+func TestAPNSEnvPerDevice(t *testing.T) {
+	env := newTestEnv(t)
+	env.post(t, "/v1/pairing/sessions", map[string]any{
+		"code": testCode, "daemon_id": testDaemonID,
+		"daemon_cred_hash": pairing.SecretHash(testSecret),
+		"daemon_name":      "Mac", "expires_at": time.Now().Add(10 * time.Minute).Unix(),
+	}, "")
+
+	// 非法环境先试:配对码不能被消费。
+	resp, body := env.post(t, "/v1/pair", map[string]any{
+		"code": testCode, "apns_token": "tok", "apns_env": "staging",
+	}, "")
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid pair apns_env should 400: %d %s", resp.StatusCode, body)
+	}
+
+	resp, body = env.post(t, "/v1/pair", map[string]any{
+		"code": testCode, "apns_token": "tok", "apns_env": "sandbox",
+	}, "")
+	if resp.StatusCode != http.StatusCreated {
+		t.Fatalf("pair HTTP %d: %s", resp.StatusCode, body)
+	}
+	var paired struct {
+		DeviceID         string `json:"device_id"`
+		DeviceCredential string `json:"device_credential"`
+	}
+	if err := json.Unmarshal(body, &paired); err != nil {
+		t.Fatal(err)
+	}
+	dev, err := env.store.Device(paired.DeviceID)
+	if err != nil || dev.APNSEnv != "sandbox" {
+		t.Fatalf("pair apns_env not stored: %+v err=%v", dev, err)
+	}
+
+	// token 上报覆盖环境。
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok2", "apns_env": "production",
+	}, paired.DeviceCredential)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("token re-report HTTP %d", resp.StatusCode)
+	}
+	if dev, _ = env.store.Device(paired.DeviceID); dev.APNSEnv != "production" {
+		t.Fatalf("token apns_env not stored: %+v", dev)
+	}
+
+	// 非法值 400 且不改原值。
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok3", "apns_env": "bogus",
+	}, paired.DeviceCredential)
+	if resp.StatusCode != http.StatusBadRequest {
+		t.Fatalf("invalid token apns_env should 400: %d", resp.StatusCode)
+	}
+	if dev, _ = env.store.Device(paired.DeviceID); dev.APNSEnv != "production" || dev.APNSToken != "tok2" {
+		t.Fatalf("invalid env must not mutate: %+v", dev)
+	}
+
+	// 缺省保持原值(旧 App)。
+	resp, _ = env.post(t, "/v1/devices/token", map[string]any{
+		"apns_token": "tok4",
+	}, paired.DeviceCredential)
+	if resp.StatusCode != http.StatusNoContent {
+		t.Fatalf("token without env HTTP %d", resp.StatusCode)
+	}
+	if dev, _ = env.store.Device(paired.DeviceID); dev.APNSEnv != "production" || dev.APNSToken != "tok4" {
+		t.Fatalf("missing env should preserve: %+v", dev)
+	}
+}

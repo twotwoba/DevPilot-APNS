@@ -492,12 +492,19 @@ func TestUpdateDeviceAPNSToken(t *testing.T) {
 	seedPairing(t, s, code, "dd_0123456789abcdef0123456789abcdef")
 	_, device := pairDevice(t, s, code)
 	newToken := strings.Repeat("a", 64)
-	if err := s.UpdateDeviceAPNSToken(device.ID, newToken, testNow+50); err != nil {
+	if err := s.UpdateDeviceAPNSToken(device.ID, newToken, "sandbox", testNow+50); err != nil {
 		t.Fatal(err)
 	}
 	d, err := s.Device(device.ID)
-	if err != nil || d.APNSToken != newToken || d.LastSeenAt != testNow+50 {
+	if err != nil || d.APNSToken != newToken || d.APNSEnv != "sandbox" || d.LastSeenAt != testNow+50 {
 		t.Fatalf("token not updated: %+v %v", d, err)
+	}
+	// 空 env 保持原值（旧 App 只报 token）
+	if err := s.UpdateDeviceAPNSToken(device.ID, newToken+"b", "", testNow+60); err != nil {
+		t.Fatal(err)
+	}
+	if d, _ = s.Device(device.ID); d.APNSEnv != "sandbox" {
+		t.Fatalf("empty env must preserve: %+v", d)
 	}
 }
 
