@@ -366,6 +366,45 @@ func TestApprovalFansOutToNotifier(t *testing.T) {
 	}
 }
 
+// 无 choice 的纯 deny = 真拒绝：close 恒 CloseReasonDenied（选项作答
+// deny+choice 已分流为 cancelled，见 TestDecisionReplayedWhenDaemonOffline）。
+func TestPlainDenyClosesAsDenied(t *testing.T) {
+	env := newTestEnv(t)
+	env.registerAndPair(t)
+
+	now := time.Now().Unix()
+	approvalID := "apv_" + strings.Repeat("d", 26)
+	ev := wire.Envelope{
+		V: wire.Version, Kind: wire.KindEvent, MsgID: "m_plaindeny", EventID: "ev_plaindeny",
+		ApprovalID: approvalID, Type: wire.EventApprovalRequired, Agent: wire.AgentClaude,
+		DaemonID: testDaemonID, SessionID: "sess_1", TS: now,
+		Payload: wire.Payload{ToolName: "Bash"},
+	}
+	if _, _, err := env.store.AppendInbox(testDaemonID, ev, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := env.store.PutPending(store.Pending{
+		ApprovalID: approvalID, DaemonID: testDaemonID, Event: ev, Status: "pending",
+		CreatedAt: now, ExpiresAt: now + 300,
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	app := dial(t, env.ts, "/ws/app", env.deviceCr)
+	hello(t, app, wire.Hello{
+		V: wire.Version, Kind: wire.KindHello, MsgID: "m_hello_pd",
+		Role: wire.RoleApp, DeviceID: env.deviceID, TS: now,
+	})
+	send(t, app, wire.Decision{
+		V: wire.Version, Kind: wire.KindDecision, MsgID: "m_plaindeny_d",
+		ApprovalID: approvalID, Decision: wire.DecisionDeny, TS: now,
+	})
+	closed, ok := recv(t, app).(*wire.Envelope)
+	if !ok || closed.Type != wire.EventApprovalClosed || closed.Payload.StatusText != wire.CloseReasonDenied {
+		t.Fatalf("synthesized close = %+v", closed)
+	}
+}
+
 func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 	env := newTestEnv(t)
 	env.registerAndPair(t)
@@ -398,7 +437,9 @@ func TestDecisionReplayedWhenDaemonOffline(t *testing.T) {
 		ApprovalID: approvalID, Decision: wire.DecisionDeny, Choice: "Session cookie", TS: now,
 	})
 	closed, ok := recv(t, app).(*wire.Envelope)
-	if !ok || closed.Type != wire.EventApprovalClosed || closed.Payload.StatusText != wire.CloseReasonDenied {
+	// deny+choice 是选项作答（wire 历史语义），不是真拒绝：close 必须
+	// 按 cancelled 收场（App 侧映射 "Answered at terminal"），不得染红。
+	if !ok || closed.Type != wire.EventApprovalClosed || closed.Payload.StatusText != wire.CloseReasonCancelled {
 		t.Fatalf("synthesized close = %+v", closed)
 	}
 	ack, ok := recv(t, app).(*wire.Ack)
