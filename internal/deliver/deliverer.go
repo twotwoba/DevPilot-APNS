@@ -195,6 +195,15 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 		priority = 10
 		collapseID = "apv-" + env.ApprovalID
 	case wire.EventApprovalClosed:
+		// 问题类（AskUserQuestion）在 daemon 侧是「只通知不阻塞」：用户在终端
+		// 答题不会产生决策回流，relay 只能等 pending 过期。这种 expired 不
+		// 代表用户错过——再推一条 "Missed approval" 纯属误报。静默收场：
+		// LA 由 sendCloudActivity 的 end 推送收，App 收件箱卡由 close 事件
+		// 正常转态（本地已按「终端已答」记账的会保持 Answered）。
+		if env.Payload.ToolName == "AskUserQuestion" &&
+			env.Payload.StatusText == wire.CloseReasonExpired {
+			return
+		}
 		// 替换推送:同 collapse-id 让已投递的审批横幅「变脸」为终态。
 		// 静默(无声音、无打断级别)——用户已在别处处理,不再打扰。
 		title := env.Payload.SessionTitle

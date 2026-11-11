@@ -534,6 +534,37 @@ func TestQuestionApprovalUsesQuestionCategory(t *testing.T) {
 	}
 }
 
+// TestQuestionExpiredCloseIsSilent 问题类过期不发「Missed approval」通知：
+// daemon 的 notify-only 让终端答题不产生决策回流，relay 只能等 pending 过期，
+// 这条 expired 不代表用户错过（2026-11-12 真机误报）。
+func TestQuestionExpiredCloseIsSilent(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	clock := &testClock{t: time.Unix(testNow, 0)}
+
+	// 问题类 expired close：0 条推送（LA end 无 token 也不会出）
+	f := &fakePusher{}
+	d := New(Config{Store: s, Pusher: f, Metrics: metrics.New(), Now: clock.Now,
+		Throttle: time.Second, APNSCategory: "DEVPILOT_APPROVAL"})
+	q := event(wire.EventApprovalClosed, "apv_q_expired")
+	q.Payload.ToolName = "AskUserQuestion"
+	q.Payload.StatusText = wire.CloseReasonExpired
+	d.Notify(context.Background(), dev, q)
+	if calls := f.snapshot(); len(calls) != 0 {
+		t.Fatalf("问题类 expired close 不得再发通知，实际 %d 条", len(calls))
+	}
+
+	// 权限类 expired close：照常提醒（用户真可能错过）
+	f2 := &fakePusher{}
+	d2 := New(Config{Store: s, Pusher: f2, Metrics: metrics.New(), Now: clock.Now,
+		Throttle: time.Second, APNSCategory: "DEVPILOT_APPROVAL"})
+	p := event(wire.EventApprovalClosed, "apv_perm_expired")
+	p.Payload.StatusText = wire.CloseReasonExpired
+	d2.Notify(context.Background(), dev, p)
+	if calls := f2.snapshot(); len(calls) != 1 {
+		t.Fatalf("权限类 expired 仍应通知，实际 %d 条", len(calls))
+	}
+}
+
 // TestApprovalPushesExemptFromDailyQuota 审批范围推送豁免日配额(默认开):
 // 免费档 1 条/日也能连发审批 alert 与 close 替换,审批不因配额哑火。
 func TestApprovalPushesExemptFromDailyQuota(t *testing.T) {
