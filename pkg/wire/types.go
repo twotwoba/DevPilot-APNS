@@ -71,13 +71,14 @@ const (
 type Agent string
 
 const (
-	AgentClaude Agent = "claude"
-	AgentCodex  Agent = "codex"
+	AgentClaude   Agent = "claude"
+	AgentCodex    Agent = "codex"
+	AgentOpenCode Agent = "opencode"
 )
 
 // Valid 判断 agent 是否受支持。
 func (a Agent) Valid() bool {
-	return a == AgentClaude || a == AgentCodex
+	return a == AgentClaude || a == AgentCodex || a == AgentOpenCode
 }
 
 // DecisionKind 是人工审批结果。

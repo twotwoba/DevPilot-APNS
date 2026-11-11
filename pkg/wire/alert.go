@@ -15,6 +15,8 @@ func DisplayAgent(a Agent) string {
 		return "Claude"
 	case AgentCodex:
 		return "Codex"
+	case AgentOpenCode:
+		return "OpenCode"
 	default:
 		return "Agent"
 	}

@@ -94,6 +94,21 @@ func TestApprovalClosedNeedsID(t *testing.T) {
 	}
 }
 
+// TestAgentOpenCodeValid 确认 opencode 通过 agent 白名单,锁屏抬头带品牌名。
+func TestAgentOpenCodeValid(t *testing.T) {
+	env := Envelope{
+		V: Version, Kind: KindEvent, MsgID: "m", EventID: "e",
+		Type: EventApprovalRequired, Agent: AgentOpenCode,
+		DaemonID: "dd_x", SessionID: "s", ApprovalID: "apv_x", TS: 1,
+	}
+	if err := env.Validate(); err != nil {
+		t.Fatalf("opencode 应通过校验,实际 %v", err)
+	}
+	if got := DisplayAgent(AgentOpenCode); got != "OpenCode" {
+		t.Fatalf("锁屏抬头应显示 OpenCode,实际 %q", got)
+	}
+}
+
 // TestApprovalIDDeterministic 确认键顺序与空白不影响审批 ID。
 func TestApprovalIDDeterministic(t *testing.T) {
 	a, err := ApprovalID("sess", "Bash", "tu_1", json.RawMessage(`{"command":"ls","cwd":"/tmp"}`))
