@@ -27,6 +27,13 @@ type Config struct {
 	// 存量 App 只注册旧串 DEVPLOT_APPROVAL,App 新版上线前部署侧应显式设旧值,
 	// 新版铺开后再移除该 env 回归默认。
 	APNSCategory string
+	// APNSQuestionCategory 是问题类审批(AskUserQuestion)的 category 标识。
+	// 默认 DEVPILOT_QUESTION:App 只注册空动作,通知本体点击直达收件箱对应卡。
+	// 与审批 category 分开,是因为审批 category 注册了 Approve/Deny 快捷动作,
+	// 而问题没有 yes/no 语义——点 Approve 等于替用户放行 + 让模型猜答案
+	// (2026-11-11 拍板)。存量 App 不认识该串时 iOS 也不展示任何自定义动作,
+	// 降级行为天然安全。
+	APNSQuestionCategory string
 
 	// —— 托管多租户:per-daemon 配额(0=关闭对应闸)——
 	RateEventFree   int           // free 档每窗口事件数
@@ -88,6 +95,7 @@ func FromEnv() (*Config, error) {
 		APNSLiveActivityTopic: env("APNS_LIVEACTIVITY_TOPIC", "com.twotwoba.devpilot.push-type.liveactivity"),
 		APNSEnvironment:       env("APNS_ENVIRONMENT", "production"),
 		APNSCategory:          env("APNS_CATEGORY", "DEVPILOT_APPROVAL"),
+		APNSQuestionCategory:  env("APNS_QUESTION_CATEGORY", "DEVPILOT_QUESTION"),
 	}
 	mock, err := strconv.ParseBool(env("APNS_MOCK", "false"))
 	if err != nil {

@@ -483,6 +483,57 @@ func TestApprovalAlertEnrichment(t *testing.T) {
 	}
 }
 
+// TestQuestionApprovalUsesQuestionCategory 问题类审批走独立 category:
+// 审批 category 在 App 侧注册了 Approve/Deny 动作,而问题没有 yes/no 语义
+// ——误点 Approve 就是替用户放行 + 让模型猜答案(2026-11-11 拍板)。问题
+// 串在 App 侧注册为空动作,点通知本体直达收件箱对应卡。
+func TestQuestionApprovalUsesQuestionCategory(t *testing.T) {
+	s, dev := setupStore(t, "apns-token")
+	clock := &testClock{t: time.Unix(testNow, 0)}
+	categoryOf := func(f *fakePusher) any {
+		t.Helper()
+		calls := f.snapshot()
+		if len(calls) != 1 {
+			t.Fatalf("calls = %d", len(calls))
+		}
+		return calls[0].Payload.(map[string]any)["aps"].(map[string]any)["category"]
+	}
+	question := func(approvalID string) wire.Envelope {
+		env := event(wire.EventApprovalRequired, approvalID)
+		env.Payload.ToolName = "AskUserQuestion"
+		env.Payload.Options = []string{"Postgres", "SQLite"}
+		return env
+	}
+
+	// 默认:问题类 → 问题串，不是审批串
+	f := &fakePusher{}
+	d := New(Config{Store: s, Pusher: f, Metrics: metrics.New(), Now: clock.Now,
+		Throttle: time.Second, APNSCategory: "DEVPILOT_APPROVAL"})
+	d.Notify(context.Background(), dev, question("apv_q1"))
+	if got := categoryOf(f); got != defaultQuestionCategory {
+		t.Fatalf("question category = %v, want %s", got, defaultQuestionCategory)
+	}
+
+	// 配置可覆盖（自建部署自定义 category）
+	f2 := &fakePusher{}
+	d2 := New(Config{Store: s, Pusher: f2, Metrics: metrics.New(), Now: clock.Now,
+		Throttle: time.Second, APNSCategory: "DEVPILOT_APPROVAL",
+		APNSQuestionCategory: "CUSTOM_QUESTION"})
+	d2.Notify(context.Background(), dev, question("apv_q2"))
+	if got := categoryOf(f2); got != "CUSTOM_QUESTION" {
+		t.Fatalf("configured question category = %v", got)
+	}
+
+	// 普通权限审批不受影响
+	f3 := &fakePusher{}
+	d3 := New(Config{Store: s, Pusher: f3, Metrics: metrics.New(), Now: clock.Now,
+		Throttle: time.Second, APNSCategory: "DEVPILOT_APPROVAL"})
+	d3.Notify(context.Background(), dev, event(wire.EventApprovalRequired, "apv_perm"))
+	if got := categoryOf(f3); got != "DEVPILOT_APPROVAL" {
+		t.Fatalf("permission category = %v", got)
+	}
+}
+
 // TestApprovalPushesExemptFromDailyQuota 审批范围推送豁免日配额(默认开):
 // 免费档 1 条/日也能连发审批 alert 与 close 替换,审批不因配额哑火。
 func TestApprovalPushesExemptFromDailyQuota(t *testing.T) {

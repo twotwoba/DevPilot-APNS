@@ -249,6 +249,7 @@ la_tokens  key=device_hash+"/"+session_id  value={push_token, updated_at}       
 | 变量 | 默认 | 说明 |
 |---|---|---|
 | `APNS_CATEGORY` | `DEVPILOT_APPROVAL` | 审批 category(拼写修正)。**存量 App 只注册旧串 `DEVPLOT_APPROVAL`,App 新版铺开前部署侧显式设旧值**,铺开后删行回归默认 |
+| `APNS_QUESTION_CATEGORY` | `DEVPILOT_QUESTION` | 问题类(`payload.tool_name == "AskUserQuestion"`)通知 category:App 侧注册为**空动作**,点通知本体直达收件箱对应卡。**不要设成审批串**——审批串带 Approve/Deny 快捷钮,问题没有 yes/no 语义,误点就是替用户放行;存量 App 不认该串时 iOS 也不展示任何自定义动作,降级天然安全 |
 | `QUOTA_EXEMPT_APPROVAL_PUSHES` | `1` | 审批范围推送(approval alert + 云审批 LA)豁免 UTC 日配额——免费档 10 条/日会被 LA 更新烧穿,旗舰功能不能被配额哑掉;遥测 LA 仍计数 |
 
 速率闸豁免集追加 `approval_closed`(终态广播不能被饿死)。

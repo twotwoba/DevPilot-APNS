@@ -41,6 +41,10 @@ const (
 	cloudLAPushKind  = "liveactivity:cloud"
 	// legacyApprovalCategory 是 v0.2 及之前的审批 category(拼写笔误)。
 	legacyApprovalCategory = "DEVPLOT_APPROVAL"
+	// defaultQuestionCategory 是问题类审批(AskUserQuestion)的 category:
+	// App 注册空动作,通知本体点击直达收件箱对应卡;绝不复用审批 category
+	// (那串带着 Approve/Deny 动作,对问题就是「替用户拍板」)。
+	defaultQuestionCategory = "DEVPILOT_QUESTION"
 )
 
 // Pusher 是 APNs 客户端的窄接口，便于测试注入。
@@ -61,6 +65,9 @@ type Config struct {
 	Throttle time.Duration
 	// APNSCategory 是审批通知 category;空值回落旧串(拼写修正的分期切换见 config)。
 	APNSCategory string
+	// APNSQuestionCategory 是问题类审批(AskUserQuestion)的 category;空值
+	// 回落 defaultQuestionCategory。与审批 category 分开,见 categoryFor。
+	APNSQuestionCategory string
 	// QuotaExemptApprovalPushes 时审批范围推送豁免日配额(见 push())。
 	QuotaExemptApprovalPushes bool
 }
@@ -127,6 +134,27 @@ func (d *Deliverer) tierOf(daemonID string) store.Tier {
 	return daemon.Tier
 }
 
+// categoryFor 选取通知的 UNNotificationCategory。
+//
+// 问题类审批(AskUserQuestion)单独一串:审批 category 在 App 侧注册了
+// Approve/Deny 快捷动作,而问题没有 yes/no 语义——误点 Approve 就是替用户
+// 放行 + 让模型猜答案(2026-11-11 拍板)。问题 category 在 App 侧注册为空
+// 动作,点通知本体走默认路径直达收件箱对应卡。
+// 存量 App 未注册该串时 iOS 也不展示任何自定义动作,降级天然安全。
+func (d *Deliverer) categoryFor(env wire.Envelope) string {
+	category := d.cfg.APNSCategory
+	if category == "" {
+		category = legacyApprovalCategory
+	}
+	if env.Payload.ToolName != "AskUserQuestion" {
+		return category
+	}
+	if q := d.cfg.APNSQuestionCategory; q != "" {
+		return q
+	}
+	return defaultQuestionCategory
+}
+
 // sendAlert 只对审批、审批关闭与任务完成发通知。
 func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Envelope) {
 	now := d.now().Unix()
@@ -136,10 +164,7 @@ func (d *Deliverer) sendAlert(tier store.Tier, device store.Device, env wire.Env
 		priority   int
 		collapseID string
 	)
-	category := d.cfg.APNSCategory
-	if category == "" {
-		category = legacyApprovalCategory
-	}
+	category := d.categoryFor(env)
 	switch env.Type {
 	case wire.EventApprovalRequired:
 		payload = map[string]any{

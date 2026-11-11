@@ -174,7 +174,8 @@ func runServe(args []string) int {
 		}
 		notifier = deliver.New(deliver.Config{
 			Store: st, Pusher: client, Metrics: m, Logger: logger, Quota: eng, Now: now,
-			APNSCategory: cfg.APNSCategory, QuotaExemptApprovalPushes: cfg.QuotaExemptApprovalPushes,
+			APNSCategory: cfg.APNSCategory, APNSQuestionCategory: cfg.APNSQuestionCategory,
+			QuotaExemptApprovalPushes: cfg.QuotaExemptApprovalPushes,
 		})
 		apnsOK = client.Healthy
 		logger.Info("APNs enabled", "mock", cfg.APNSMock, "environment", cfg.APNSEnvironment)
