@@ -31,7 +31,11 @@ type CloudApprovalState struct {
 	CommandSummary string `json:"commandSummary,omitempty"`
 	HostName       string `json:"hostName,omitempty"`
 	ApprovalID     string `json:"approvalId,omitempty"`
-	State          string `json:"state"`
+	// Options 是选项型审批（AskUserQuestion）的候选标签：锁屏卡直接出
+	// 选项钮，不再只有 Approve/Deny 二值（2026-11-11 用户反馈）。旧 App
+	// 不解码该键，向后兼容。
+	Options []string `json:"options,omitempty"`
+	State   string   `json:"state"`
 	// ExpiresAt 是倒计时终点（Unix 秒）；仅 needsYou 态有意义。
 	ExpiresAt int64 `json:"expiresAt,omitempty"`
 	UpdatedAt int64 `json:"updatedAt"`
@@ -113,6 +117,7 @@ func CloudApprovalStateFor(env Envelope, now int64) CloudApprovalState {
 		CommandSummary: Truncate(env.Payload.CommandSummary, MaxCommandRunes),
 		HostName:       env.Payload.Hostname,
 		ApprovalID:     env.ApprovalID,
+		Options:        env.Payload.Options,
 		State:          CloudStateFor(env),
 		ExpiresAt:      expires,
 		// 统一用发送时刻打点，避免 daemon 与 relay 时钟差导致卡片时间倒退。

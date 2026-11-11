@@ -202,7 +202,8 @@ func TestCloudApprovalPushShapes(t *testing.T) {
 		DaemonID: "dd_1", SessionID: "sess_1", Agent: AgentClaude,
 		ExpiresAt: 1000, TS: 100,
 		Payload: Payload{SessionTitle: "支付重构", ToolName: "Bash",
-			CommandSummary: "make deploy", Hostname: "mbp.local"},
+			CommandSummary: "make deploy", Hostname: "mbp.local",
+			Options: []string{"Postgres", "SQLite", "Cloud KV"}},
 	}
 
 	start := CloudApprovalPushFor(approval, 200, true)
@@ -220,6 +221,10 @@ func TestCloudApprovalPushShapes(t *testing.T) {
 	}
 	if cs := start.APS.ContentState; cs.State != CloudStateNeedsYou || cs.ExpiresAt != 1000 {
 		t.Fatalf("needsYou content-state 不符: %+v", cs)
+	}
+	// 选项型审批的候选标签必须透传进 content-state（锁屏卡出选项钮）。
+	if got := start.APS.ContentState.Options; len(got) != 3 || got[0] != "Postgres" {
+		t.Fatalf("content-state options 透传不符: %v", got)
 	}
 	// start 必须带 alert：缺这个键 APNs 照样 200，iOS 端静默不起卡。
 	if start.APS.Alert == nil {

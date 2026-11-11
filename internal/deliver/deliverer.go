@@ -103,13 +103,18 @@ func (d *Deliverer) Notify(ctx context.Context, device store.Device, env wire.En
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	if device.APNSToken != "" {
+	// 云审批卡先行（sendCloudActivity 返回是否对该设备出了卡面推送）：
+	// approval_required 且卡面已覆盖（会话卡 update / push-to-start 起卡）
+	// 时跳过审批 alert——锁屏同时出现卡+通知纯属重复（2026-11-11 真机
+	// 反馈）。卡起不来（LA 被关→无 token；强退兜底失败）时这里自然回落
+	// 通知层，审批可达性不依赖本次抑制。
+	cardPushed := d.sendCloudActivity(d.tierOf(env.DaemonID), device, env)
+	if device.APNSToken != "" &&
+		!(env.Type == wire.EventApprovalRequired && cardPushed) {
 		d.sendAlert(d.tierOf(env.DaemonID), device, env)
 	}
 	// 没有 alert token 的设备仍可能注册了 Live Activity token。
 	d.sendLiveActivity(d.tierOf(env.DaemonID), device, env)
-	// 云审批卡(新版 App):push-to-start 起卡 / update / end 收场。
-	d.sendCloudActivity(d.tierOf(env.DaemonID), device, env)
 }
 
 // tierOf 读取 daemon 档位；记录不存在（已注销级联）按 free——
@@ -342,16 +347,19 @@ func (d *Deliverer) push(tier store.Tier, kind, deviceID string, env wire.Envelo
 //   - approval_closed / task_complete / session_ended:会话级 token 发 end 收场。
 //   - 其余遥测事件不驱动云审批卡(回到 working 形态由 update 事件承担,这里不扩)。
 //   - 强退的 App:push-to-start 被 iOS 拒绝,自然回落通知按钮层(App 侧契约)。
-func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env wire.Envelope) {
+//
+// 返回本次是否对该设备出了卡面推送(approval_required 的 update/start),
+// Notify 据此抑制同内容的审批 alert。
+func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env wire.Envelope) bool {
 	isEnd := env.Type == wire.EventApprovalClosed ||
 		env.Type == wire.EventTaskComplete || env.Type == wire.EventSessionEnded
 	if env.Type != wire.EventApprovalRequired && !isEnd {
-		return
+		return false
 	}
 	tokens, err := d.cfg.Store.LATokensForDaemon(env.DaemonID)
 	if err != nil {
 		d.log.Warn("failed to list Live Activity tokens", "daemon_id", env.DaemonID, "err", err)
-		return
+		return false
 	}
 	var sessionToken string
 	for _, tok := range tokens {
@@ -388,7 +396,7 @@ func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env 
 				}
 			}
 		})
-		return
+		return env.Type == wire.EventApprovalRequired
 	}
 
 	// 路径二:设备级 push-to-start token(App 被杀时由 relay 起卡)。
@@ -409,7 +417,9 @@ func (d *Deliverer) sendCloudActivity(tier store.Tier, device store.Device, env 
 				d.log.Warn("failed to clear stale push-to-start token", "device_id", device.ID, "err", err)
 			}
 		}
+		return true
 	}
+	return false
 }
 
 // approvalScoped 判定审批范围事件(alert 替换 + LA 驱动都豁免日配额的集合)。
