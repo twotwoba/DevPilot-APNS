@@ -93,7 +93,15 @@ func (h *Hub) ApplyDeviceDecision(daemonID, approvalID string, decision wire.Dec
 	})
 	reason := wire.CloseReasonApproved
 	if decision == wire.DecisionDeny {
-		reason = wire.CloseReasonDenied
+		// deny+choice 是选项作答的 wire 历史语义，不是真拒绝：按 cancelled
+		// 收场。否则锁屏卡/inbox 会把「用户选了 SQLite」渲染成红色 Denied
+		// （2026-11-11 用户反馈）；App 侧 cancelled 恰好映射 "Answered at
+		// terminal" 文案。
+		if choice != "" {
+			reason = wire.CloseReasonCancelled
+		} else {
+			reason = wire.CloseReasonDenied
+		}
 	}
 	h.SynthesizeClose(p, reason)
 	return status, nil
